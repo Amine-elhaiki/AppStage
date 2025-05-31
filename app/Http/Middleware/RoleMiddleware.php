@@ -4,7 +4,6 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\Response;
 
 class RoleMiddleware
@@ -13,27 +12,24 @@ class RoleMiddleware
      * Handle an incoming request.
      *
      * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
-     * @param  string  ...$roles
      */
-    public function handle(Request $request, Closure $next, string ...$roles): Response
+    public function handle(Request $request, Closure $next, ...$roles): Response
     {
-        // Vérifier que l'utilisateur est connecté
-        if (!Auth::check()) {
-            return redirect('/login')->with('error', 'Vous devez être connecté pour accéder à cette page.');
+        if (!auth()->check()) {
+            return redirect()->route('login');
         }
 
-        $user = Auth::user();
+        $user = auth()->user();
 
-        // Vérifier que l'utilisateur est actif
-        if ($user->statut !== 'actif') {
-            Auth::logout();
-            return redirect('/login')->with('error', 'Votre compte a été désactivé.');
-        }
-
-        // Vérifier que l'utilisateur a l'un des rôles requis
+        // Vérifier si l'utilisateur a l'un des rôles requis
         if (!in_array($user->role, $roles)) {
-            $rolesString = implode(', ', $roles);
-            abort(403, "Accès réservé aux utilisateurs avec le(s) rôle(s) : {$rolesString}");
+            abort(403, 'Accès non autorisé. Vous n\'avez pas les permissions nécessaires.');
+        }
+
+        // Vérifier si l'utilisateur est actif
+        if ($user->statut !== 'actif') {
+            auth()->logout();
+            return redirect()->route('login')->with('error', 'Votre compte n\'est pas actif.');
         }
 
         return $next($request);

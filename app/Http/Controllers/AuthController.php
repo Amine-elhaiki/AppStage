@@ -1,187 +1,191 @@
 <?php
 
-// =============================================================================
-// COPIEZ CES LIGNES EXACTEMENT EN HAUT DE VOTRE AUTHCONTROLLER.PHP
-// =============================================================================
-
 namespace App\Http\Controllers;
 
-use App\Models\User;                      // ← LIGNE OBLIGATOIRE
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
+use App\Models\User;
 
 class AuthController extends Controller
 {
-    // =============================================================================
-    // REMPLACEZ VOTRE MÉTHODE REGISTER PAR CELLE-CI :
-    // =============================================================================
-
-    public function register(Request $request)
-    {
-        // Validation simple
-        $request->validate([
-            'nom' => 'required|string|max:50',
-            'prenom' => 'required|string|max:50',
-            'email' => 'required|email|unique:users',
-            'password' => 'required|min:8',
-            'role' => 'required|in:admin,technicien',
-        ]);
-
-        // SOLUTION A : Avec User::create() - RECOMMANDÉE
-        try {
-            $user = User::create([
-                'nom' => $request->nom,
-                'prenom' => $request->prenom,
-                'email' => $request->email,
-                'password' => Hash::make($request->password),
-                'role' => $request->role,
-                'statut' => 'actif',
-                'telephone' => $request->telephone,
-            ]);
-
-            return redirect()->back()->with('success', 'Utilisateur créé avec succès !');
-
-        } catch (\Exception $e) {
-            return redirect()->back()->with('error', 'Erreur : ' . $e->getMessage());
-        }
-    }
-
-    public function registerAlternative(Request $request)
-    {
-        // Validation
-        $request->validate([
-            'nom' => 'required|string|max:50',
-            'prenom' => 'required|string|max:50',
-            'email' => 'required|email|unique:users',
-            'password' => 'required|min:8',
-            'role' => 'required|in:admin,technicien',
-        ]);
-
-        // SOLUTION B : Avec new User() et save()
-        try {
-            // Étape 1 : Créer l'instance (vérifiez que User est importé en haut)
-            $user = new User();
-
-            // Étape 2 : Assigner les valeurs
-            $user->nom = $request->nom;
-            $user->prenom = $request->prenom;
-            $user->email = $request->email;
-            $user->password = Hash::make($request->password);
-            $user->role = $request->role;
-            $user->statut = 'actif';
-            $user->telephone = $request->telephone;
-
-            // Étape 3 : Sauvegarder
-            $user->save();  // ← Cette ligne doit maintenant fonctionner
-
-            return redirect()->back()->with('success', 'Utilisateur créé avec succès !');
-
-        } catch (\Exception $e) {
-            return redirect()->back()->with('error', 'Erreur : ' . $e->getMessage());
-        }
-    }
-
-    // =============================================================================
-    // MÉTHODE DE TEST - AJOUTEZ CECI POUR TESTER
-    // =============================================================================
-
-    public function testSave()
-    {
-        try {
-            // Test simple
-            $user = new User();
-            $user->nom = 'Test';
-            $user->prenom = 'User';
-            $user->email = 'test_' . time() . '@test.com';
-            $user->password = Hash::make('password123');
-            $user->role = 'technicien';
-            $user->statut = 'actif';
-
-            $result = $user->save();
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Test save() réussi !',
-                'user_id' => $user->id,
-                'save_result' => $result
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'error' => $e->getMessage(),
-                'line' => $e->getLine(),
-                'file' => basename($e->getFile())
-            ]);
-        }
-    }
-
-    // =============================================================================
-    // AUTRES MÉTHODES STANDARD (login, logout, etc.)
-    // =============================================================================
-
-    public function login(Request $request)
-    {
-        $credentials = $request->validate([
-            'email' => 'required|email',
-            'password' => 'required',
-        ]);
-
-        if (Auth::attempt($credentials)) {
-            $request->session()->regenerate();
-            return redirect()->intended('/dashboard');
-        }
-
-        return back()->withErrors(['email' => 'Identifiants incorrects.']);
-    }
-
-    public function logout(Request $request)
-    {
-        Auth::logout();
-        $request->session()->invalidate();
-        $request->session()->regenerateToken();
-        return redirect('/login');
-    }
-
-    public function showLogin()
+    /**
+     * Afficher le formulaire de connexion
+     */
+    public function showLoginForm()
     {
         return view('auth.login');
     }
+
+    /**
+     * Traiter la connexion
+     */
+    public function login(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email',
+            'password' => 'required|string|min:6',
+        ], [
+            'email.required' => 'L\'adresse email est requise.',
+            'email.email' => 'L\'adresse email doit être valide.',
+            'password.required' => 'Le mot de passe est requis.',
+            'password.min' => 'Le mot de passe doit contenir au moins 6 caractères.',
+        ]);
+
+        $credentials = $request->only('email', 'password');
+        $remember = $request->boolean('remember');
+
+        // Vérifier si l'utilisateur existe
+        $user = User::where('email', $credentials['email'])->first();
+
+        if (!$user) {
+            throw ValidationException::withMessages([
+                'email' => ['Ces identifiants ne correspondent à aucun compte.'],
+            ]);
+        }
+
+        // Vérifier si l'utilisateur est actif
+        if ($user->statut !== 'actif') {
+            throw ValidationException::withMessages([
+                'email' => ['Votre compte n\'est pas actif. Contactez l\'administrateur.'],
+            ]);
+        }
+
+        // Tentative de connexion
+        if (Auth::attempt($credentials, $remember)) {
+            $request->session()->regenerate();
+
+            // Mettre à jour la dernière connexion
+            $user->updateLastLogin();
+
+            // Redirection selon le rôle
+            return $this->redirectToDashboard($user);
+        }
+
+        throw ValidationException::withMessages([
+            'email' => ['Ces identifiants ne correspondent à aucun compte.'],
+        ]);
+    }
+
+    /**
+     * Déconnexion
+     */
+    public function logout(Request $request)
+    {
+        Auth::logout();
+
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
+        return redirect()->route('login')->with('success', 'Vous avez été déconnecté avec succès.');
+    }
+
+    /**
+     * Redirection vers le tableau de bord approprié
+     */
+    protected function redirectToDashboard(User $user)
+    {
+        $message = "Bienvenue {$user->prenom} ! Connexion réussie.";
+
+        switch ($user->role) {
+            case 'admin':
+                return redirect()->route('dashboard.admin')->with('success', $message);
+            case 'technicien':
+                return redirect()->route('dashboard.technicien')->with('success', $message);
+            case 'chef_equipe':
+                return redirect()->route('dashboard.chef-equipe')->with('success', $message);
+            default:
+                return redirect()->route('dashboard')->with('success', $message);
+        }
+    }
+
+    /**
+     * API pour vérifier l'authentification
+     */
+    public function checkAuth(Request $request)
+    {
+        if (Auth::check()) {
+            return response()->json([
+                'authenticated' => true,
+                'user' => [
+                    'id' => Auth::id(),
+                    'nom' => Auth::user()->nom,
+                    'prenom' => Auth::user()->prenom,
+                    'email' => Auth::user()->email,
+                    'role' => Auth::user()->role,
+                    'initials' => Auth::user()->initials,
+                ]
+            ]);
+        }
+
+        return response()->json(['authenticated' => false], 401);
+    }
+
+    /**
+     * Changer le mot de passe
+     */
+    public function changePassword(Request $request)
+    {
+        $request->validate([
+            'current_password' => 'required',
+            'new_password' => 'required|string|min:8|confirmed',
+        ], [
+            'current_password.required' => 'Le mot de passe actuel est requis.',
+            'new_password.required' => 'Le nouveau mot de passe est requis.',
+            'new_password.min' => 'Le nouveau mot de passe doit contenir au moins 8 caractères.',
+            'new_password.confirmed' => 'La confirmation du mot de passe ne correspond pas.',
+        ]);
+
+        $user = Auth::user();
+
+        // Vérifier le mot de passe actuel
+        if (!Hash::check($request->current_password, $user->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => ['Le mot de passe actuel est incorrect.'],
+            ]);
+        }
+
+        // Mettre à jour le mot de passe
+        $user->update([
+            'password' => Hash::make($request->new_password),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Mot de passe mis à jour avec succès.',
+        ]);
+    }
+
+    /**
+     * Profil utilisateur
+     */
+    public function profile()
+    {
+        $user = Auth::user();
+
+        return view('auth.profile', compact('user'));
+    }
+
+    /**
+     * Mettre à jour le profil
+     */
+    public function updateProfile(Request $request)
+    {
+        $user = Auth::user();
+
+        $request->validate([
+            'nom' => 'required|string|max:255',
+            'prenom' => 'required|string|max:255',
+            'telephone' => 'nullable|string|max:20',
+            'specialite' => 'nullable|string|max:255',
+        ], [
+            'nom.required' => 'Le nom est requis.',
+            'prenom.required' => 'Le prénom est requis.',
+        ]);
+
+        $user->update($request->only(['nom', 'prenom', 'telephone', 'specialite']));
+
+        return back()->with('success', 'Profil mis à jour avec succès.');
+    }
 }
-
-// =============================================================================
-// VÉRIFIEZ AUSSI QUE VOTRE MODÈLE USER (app/Models/User.php) CONTIENT :
-// =============================================================================
-
-/*
-<?php
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Notifications\Notifiable;
-
-class User extends Authenticatable  // ← LIGNE IMPORTANTE
-{
-    use HasFactory, Notifiable;
-
-    protected $fillable = [
-        'nom', 'prenom', 'email', 'password', 'role', 'statut', 'telephone'
-    ];
-
-    protected $hidden = ['password', 'remember_token'];
-}
-*/
-
-// =============================================================================
-// AJOUTEZ CETTE ROUTE DE TEST DANS routes/web.php :
-// =============================================================================
-
-/*
-Route::get('/test-save', [App\Http\Controllers\AuthController::class, 'testSave']);
-*/
-
-// =============================================================================
-// PUIS TESTEZ EN ALLANT SUR : http://votre-site.com/test-save
-// =============================================================================

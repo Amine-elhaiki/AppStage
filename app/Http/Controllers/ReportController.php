@@ -2,774 +2,490 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Report;
+use App\Models\Event;
+use App\Models\Project;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Facades\Log; // ← CORRECTION 1 : Import correct pour Log
-use Illuminate\Http\Response;
-use App\Models\Report;
-use App\Models\PieceJointe;
-use App\Models\Task;
-use App\Models\Event;
-use App\Models\User;
-use Carbon\Carbon;
-// PLUS D'IMPORTS PDF - Supprimés pour éviter les erreurs
+use Illuminate\Support\Str;
 
 class ReportController extends Controller
 {
     /**
-     * Afficher la liste des rapports
+     * Display a listing of the resource.
      */
     public function index(Request $request)
     {
-        $user = Auth::user();
-        $query = Report::with('user', 'task', 'event', 'piecesJointes');
+        $query = Report::with(['user', 'event', 'project']);
 
         // Filtrage selon le rôle
-        if ($user->role === 'technicien') {
-            $query->where('id_utilisateur', $user->id);
+        if (!Auth::user()->isAdmin() && !Auth::user()->isChefEquipe()) {
+            $query->where('user_id', Auth::id());
         }
 
-        // Filtres de recherche
-        if ($request->filled('utilisateur') && $user->role === 'admin') {
-            $query->where('id_utilisateur', $request->utilisateur);
+        // Filtres
+        if ($request->filled('type')) {
+            $query->where('type', $request->type);
         }
 
-        if ($request->filled('type_intervention')) {
-            $query->where('type_intervention', 'like', "%{$request->type_intervention}%");
+        if ($request->filled('status')) {
+            $query->where('statut', $request->status);
         }
 
-        if ($request->filled('lieu')) {
-            $query->where('lieu', 'like', "%{$request->lieu}%");
+        if ($request->filled('project')) {
+            $query->where('project_id', $request->project);
         }
 
-        if ($request->filled('date_debut')) {
-            $query->whereDate('date_intervention', '>=', $request->date_debut);
+        if ($request->filled('user') && (Auth::user()->isAdmin() || Auth::user()->isChefEquipe())) {
+            $query->where('user_id', $request->user);
         }
 
-        if ($request->filled('date_fin')) {
-            $query->whereDate('date_intervention', '<=', $request->date_fin);
+        if ($request->filled('date_from')) {
+            $query->whereDate('date_intervention', '>=', $request->date_from);
+        }
+
+        if ($request->filled('date_to')) {
+            $query->whereDate('date_intervention', '<=', $request->date_to);
         }
 
         if ($request->filled('search')) {
             $search = $request->search;
             $query->where(function($q) use ($search) {
                 $q->where('titre', 'like', "%{$search}%")
+                  ->orWhere('description', 'like', "%{$search}%")
                   ->orWhere('lieu', 'like', "%{$search}%")
-                  ->orWhere('type_intervention', 'like', "%{$search}%")
-                  ->orWhere('actions', 'like', "%{$search}%")
-                  ->orWhere('resultats', 'like', "%{$search}%");
+                  ->orWhere('probleme_identifie', 'like', "%{$search}%");
             });
         }
 
-        // Tri par défaut : rapports les plus récents
-        $sortBy = $request->get('sort', 'date_creation');
-        $sortOrder = $request->get('order', 'desc');
-        $query->orderBy($sortBy, $sortOrder);
+        // Tri
+        $sortBy = $request->get('sort', 'date_intervention');
+        $sortDirection = $request->get('direction', 'desc');
 
-        $reports = $query->paginate(15);
+        if (in_array($sortBy, ['titre', 'type', 'statut', 'date_intervention', 'lieu', 'cout_intervention'])) {
+            $query->orderBy($sortBy, $sortDirection);
+        }
+
+        $reports = $query->paginate(15)->withQueryString();
 
         // Données pour les filtres
-        $users = $user->role === 'admin' ? User::where('statut', 'actif')->get() : collect();
+        $projects = Project::orderBy('nom')->get();
+        $users = (Auth::user()->isAdmin() || Auth::user()->isChefEquipe()) ? User::orderBy('prenom')->get() : collect();
 
-        // Types d'intervention les plus courants
-        $interventionTypes = Report::selectRaw('type_intervention, count(*) as count')
-                                  ->groupBy('type_intervention')
-                                  ->orderBy('count', 'desc')
-                                  ->limit(10)
-                                  ->pluck('type_intervention');
-
-        return view('reports.index', compact('reports', 'users', 'interventionTypes'));
+        return view('reports.index', compact('reports', 'projects', 'users'));
     }
 
     /**
-     * Afficher le formulaire de création d'un rapport
+     * Show the form for creating a new resource.
      */
     public function create(Request $request)
     {
-        // Pré-remplir avec tâche ou événement si fourni
-        $task = $request->has('task_id') ? Task::find($request->task_id) : null;
-        $event = $request->has('event_id') ? Event::find($request->event_id) : null;
+        $projects = Project::active()->orderBy('nom')->get();
+        $events = Event::where('user_id', Auth::id())
+            ->where('statut', '!=', 'annule')
+            ->orderBy('date_debut', 'desc')
+            ->get();
 
-        $tasks = Task::where('id_utilisateur', Auth::id())
-                    ->whereIn('statut', ['en_cours', 'termine'])
-                    ->orderBy('date_echeance', 'desc')
-                    ->get();
+        // Pré-remplir avec un événement si spécifié
+        $selectedEvent = null;
+        if ($request->filled('event_id')) {
+            $selectedEvent = Event::find($request->event_id);
+        }
 
-        $events = Event::where('id_organisateur', Auth::id())
-                      ->orWhereHas('participants', function($q) {
-                          $q->where('id_utilisateur', Auth::id());
-                      })
-                      ->where('statut', 'termine')
-                      ->orderBy('date_debut', 'desc')
-                      ->get();
-
-        return view('reports.create', compact('task', 'event', 'tasks', 'events'));
+        return view('reports.create', compact('projects', 'events', 'selectedEvent'));
     }
 
     /**
-     * Enregistrer un nouveau rapport
+     * Store a newly created resource in storage.
      */
     public function store(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'titre' => 'required|string|max:100',
+        $request->validate([
+            'titre' => 'required|string|max:255',
+            'description' => 'required|string',
+            'type' => 'required|in:intervention,maintenance,inspection,reparation,installation,autre',
             'date_intervention' => 'required|date|before_or_equal:today',
-            'lieu' => 'required|string|max:100',
-            'type_intervention' => 'required|string|max:50',
-            'actions' => 'required|string',
-            'resultats' => 'required|string',
-            'problemes' => 'nullable|string',
+            'lieu' => 'required|string|max:255',
+            'probleme_identifie' => 'nullable|string',
+            'actions_effectuees' => 'required|string',
+            'materiels_utilises' => 'nullable|string',
+            'etat_equipement' => 'nullable|in:bon,moyen,mauvais,hors_service',
             'recommandations' => 'nullable|string',
-            'id_tache' => 'nullable|exists:tasks,id',
-            'id_evenement' => 'nullable|exists:events,id',
-            'pieces_jointes' => 'nullable|array|max:5',
-            'pieces_jointes.*' => 'file|max:10240|mimes:pdf,doc,docx,jpg,jpeg,png,gif',
+            'cout_intervention' => 'nullable|numeric|min:0',
+            'event_id' => 'nullable|exists:events,id',
+            'project_id' => 'nullable|exists:projects,id',
+            'photos.*' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // 5MB max par photo
         ], [
             'titre.required' => 'Le titre est obligatoire.',
+            'description.required' => 'La description est obligatoire.',
+            'type.required' => 'Le type de rapport est obligatoire.',
             'date_intervention.required' => 'La date d\'intervention est obligatoire.',
-            'date_intervention.before_or_equal' => 'La date d\'intervention ne peut pas être future.',
+            'date_intervention.before_or_equal' => 'La date d\'intervention ne peut pas être dans le futur.',
             'lieu.required' => 'Le lieu est obligatoire.',
-            'type_intervention.required' => 'Le type d\'intervention est obligatoire.',
-            'actions.required' => 'La description des actions est obligatoire.',
-            'resultats.required' => 'La description des résultats est obligatoire.',
-            'pieces_jointes.*.max' => 'Chaque fichier ne peut pas dépasser 10 MB.',
-            'pieces_jointes.*.mimes' => 'Types de fichiers autorisés: PDF, DOC, DOCX, JPG, PNG, GIF.',
+            'actions_effectuees.required' => 'Les actions effectuées sont obligatoires.',
+            'cout_intervention.numeric' => 'Le coût doit être un nombre.',
+            'cout_intervention.min' => 'Le coût ne peut pas être négatif.',
+            'photos.*.image' => 'Le fichier doit être une image.',
+            'photos.*.mimes' => 'L\'image doit être au format JPEG, PNG, JPG ou GIF.',
+            'photos.*.max' => 'L\'image ne doit pas dépasser 5MB.',
         ]);
 
-        if ($validator->fails()) {
-            return back()->withErrors($validator)->withInput();
+        // Gestion des photos
+        $photosPaths = [];
+        if ($request->hasFile('photos')) {
+            foreach ($request->file('photos') as $photo) {
+                $filename = Str::uuid() . '.' . $photo->getClientOriginalExtension();
+                $path = $photo->storeAs('reports/photos', $filename, 'public');
+                $photosPaths[] = $path;
+            }
         }
 
         $report = Report::create([
             'titre' => $request->titre,
+            'description' => $request->description,
+            'type' => $request->type,
             'date_intervention' => $request->date_intervention,
             'lieu' => $request->lieu,
-            'type_intervention' => $request->type_intervention,
-            'actions' => $request->actions,
-            'resultats' => $request->resultats,
-            'problemes' => $request->problemes,
+            'probleme_identifie' => $request->probleme_identifie,
+            'actions_effectuees' => $request->actions_effectuees,
+            'materiels_utilises' => $request->materiels_utilises,
+            'etat_equipement' => $request->etat_equipement,
             'recommandations' => $request->recommandations,
-            'id_utilisateur' => Auth::id(),
-            'id_tache' => $request->id_tache,
-            'id_evenement' => $request->id_evenement,
+            'cout_intervention' => $request->cout_intervention,
+            'statut' => 'brouillon',
+            'photos' => $photosPaths,
+            'user_id' => Auth::id(),
+            'event_id' => $request->event_id,
+            'project_id' => $request->project_id,
         ]);
 
-        // Traitement des pièces jointes
-        if ($request->hasFile('pieces_jointes')) {
-            foreach ($request->file('pieces_jointes') as $file) {
-                $this->storeAttachment($file, $report);
-            }
-        }
-
-        // Log de l'action
-        $this->logAction('CREATION', "Création du rapport: {$report->titre}");
-
-        return redirect()->route('reports.index')
-                        ->with('success', 'Rapport créé avec succès.');
+        return redirect()->route('reports.show', $report)
+            ->with('success', 'Rapport créé avec succès.');
     }
 
     /**
-     * Afficher les détails d'un rapport
+     * Display the specified resource.
      */
     public function show(Report $report)
     {
         $this->authorize('view', $report);
 
-        $report->load('user', 'task.project', 'event', 'piecesJointes');
+        $report->load(['user', 'event', 'project']);
 
         return view('reports.show', compact('report'));
     }
 
     /**
-     * Afficher le formulaire d'édition
+     * Show the form for editing the specified resource.
      */
     public function edit(Report $report)
     {
         $this->authorize('update', $report);
 
-        $tasks = Task::where('id_utilisateur', Auth::id())
-                    ->whereIn('statut', ['en_cours', 'termine'])
-                    ->orderBy('date_echeance', 'desc')
-                    ->get();
+        $projects = Project::active()->orderBy('nom')->get();
+        $events = Event::where('user_id', Auth::id())
+            ->where('statut', '!=', 'annule')
+            ->orderBy('date_debut', 'desc')
+            ->get();
 
-        $events = Event::where('id_organisateur', Auth::id())
-                      ->orWhereHas('participants', function($q) {
-                          $q->where('id_utilisateur', Auth::id());
-                      })
-                      ->where('statut', 'termine')
-                      ->orderBy('date_debut', 'desc')
-                      ->get();
-
-        return view('reports.edit', compact('report', 'tasks', 'events'));
+        return view('reports.edit', compact('report', 'projects', 'events'));
     }
 
     /**
-     * Mettre à jour un rapport
+     * Update the specified resource in storage.
      */
     public function update(Request $request, Report $report)
     {
         $this->authorize('update', $report);
 
-        $validator = Validator::make($request->all(), [
-            'titre' => 'required|string|max:100',
+        $request->validate([
+            'titre' => 'required|string|max:255',
+            'description' => 'required|string',
+            'type' => 'required|in:intervention,maintenance,inspection,reparation,installation,autre',
             'date_intervention' => 'required|date|before_or_equal:today',
-            'lieu' => 'required|string|max:100',
-            'type_intervention' => 'required|string|max:50',
-            'actions' => 'required|string',
-            'resultats' => 'required|string',
-            'problemes' => 'nullable|string',
+            'lieu' => 'required|string|max:255',
+            'probleme_identifie' => 'nullable|string',
+            'actions_effectuees' => 'required|string',
+            'materiels_utilises' => 'nullable|string',
+            'etat_equipement' => 'nullable|in:bon,moyen,mauvais,hors_service',
             'recommandations' => 'nullable|string',
-            'id_tache' => 'nullable|exists:tasks,id',
-            'id_evenement' => 'nullable|exists:events,id',
-            'nouvelles_pieces_jointes' => 'nullable|array|max:5',
-            'nouvelles_pieces_jointes.*' => 'file|max:10240|mimes:pdf,doc,docx,jpg,jpeg,png,gif',
+            'cout_intervention' => 'nullable|numeric|min:0',
+            'event_id' => 'nullable|exists:events,id',
+            'project_id' => 'nullable|exists:projects,id',
+            'photos.*' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120',
         ]);
 
-        if ($validator->fails()) {
-            return back()->withErrors($validator)->withInput();
+        // Gestion des nouvelles photos
+        $photosPaths = $report->photos ?? [];
+        if ($request->hasFile('photos')) {
+            foreach ($request->file('photos') as $photo) {
+                $filename = Str::uuid() . '.' . $photo->getClientOriginalExtension();
+                $path = $photo->storeAs('reports/photos', $filename, 'public');
+                $photosPaths[] = $path;
+            }
         }
 
         $report->update([
             'titre' => $request->titre,
+            'description' => $request->description,
+            'type' => $request->type,
             'date_intervention' => $request->date_intervention,
             'lieu' => $request->lieu,
-            'type_intervention' => $request->type_intervention,
-            'actions' => $request->actions,
-            'resultats' => $request->resultats,
-            'problemes' => $request->problemes,
+            'probleme_identifie' => $request->probleme_identifie,
+            'actions_effectuees' => $request->actions_effectuees,
+            'materiels_utilises' => $request->materiels_utilises,
+            'etat_equipement' => $request->etat_equipement,
             'recommandations' => $request->recommandations,
-            'id_tache' => $request->id_tache,
-            'id_evenement' => $request->id_evenement,
+            'cout_intervention' => $request->cout_intervention,
+            'photos' => $photosPaths,
+            'event_id' => $request->event_id,
+            'project_id' => $request->project_id,
         ]);
 
-        // Traitement des nouvelles pièces jointes
-        if ($request->hasFile('nouvelles_pieces_jointes')) {
-            foreach ($request->file('nouvelles_pieces_jointes') as $file) {
-                $this->storeAttachment($file, $report);
-            }
-        }
-
-        $this->logAction('MODIFICATION', "Modification du rapport: {$report->titre}");
-
         return redirect()->route('reports.show', $report)
-                        ->with('success', 'Rapport mis à jour avec succès.');
+            ->with('success', 'Rapport mis à jour avec succès.');
     }
 
     /**
-     * Supprimer un rapport
+     * Remove the specified resource from storage.
      */
     public function destroy(Report $report)
     {
         $this->authorize('delete', $report);
 
-        $reportTitle = $report->titre;
-
-        // Supprimer les pièces jointes
-        foreach ($report->piecesJointes as $attachment) {
-            if (Storage::disk('public')->exists($attachment->chemin)) {
-                Storage::disk('public')->delete($attachment->chemin);
+        // Supprimer les photos
+        if ($report->photos) {
+            foreach ($report->photos as $photo) {
+                Storage::disk('public')->delete($photo);
             }
-            $attachment->delete();
         }
 
         $report->delete();
 
-        $this->logAction('SUPPRESSION', "Suppression du rapport: {$reportTitle}");
-
         return redirect()->route('reports.index')
-                        ->with('success', 'Rapport supprimé avec succès.');
+            ->with('success', 'Rapport supprimé avec succès.');
     }
 
     /**
-     * CORRECTION 2 : Télécharger une pièce jointe - VERSION NATIVE
+     * Submit report for validation
      */
-    public function downloadAttachment(PieceJointe $attachment)
+    public function submit(Report $report)
     {
-        $report = $attachment->report;
-        $this->authorize('view', $report);
-
-        // Vérifier que le fichier existe
-        if (!Storage::disk('public')->exists($attachment->chemin)) {
-            return redirect()->back()->with('error', 'Fichier non trouvé.');
-        }
-
-        $this->logAction('TELECHARGEMENT', "Téléchargement de la pièce jointe: {$attachment->nom_fichier}");
-
-        // SOLUTION NATIVE - Fonctionne toujours
-        try {
-            $filePath = Storage::disk('public')->path($attachment->chemin);
-
-            if (!file_exists($filePath)) {
-                return redirect()->back()->with('error', 'Fichier introuvable sur le serveur.');
-            }
-
-            return response()->download($filePath, $attachment->nom_fichier, [
-                'Content-Type' => $attachment->type_fichier ?? 'application/octet-stream',
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Erreur téléchargement fichier: ' . $e->getMessage());
-            return redirect()->back()->with('error', 'Erreur lors du téléchargement.');
-        }
-    }
-
-    /**
-     * Supprimer une pièce jointe
-     */
-    public function deleteAttachment(PieceJointe $attachment)
-    {
-        $report = $attachment->report;
         $this->authorize('update', $report);
 
-        if (Storage::disk('public')->exists($attachment->chemin)) {
-            Storage::disk('public')->delete($attachment->chemin);
+        if ($report->statut !== 'brouillon') {
+            return back()->with('error', 'Seuls les rapports en brouillon peuvent être soumis.');
         }
 
-        $fileName = $attachment->nom_fichier;
-        $attachment->delete();
+        $report->submit();
 
-        $this->logAction('SUPPRESSION', "Suppression de la pièce jointe: {$fileName}");
+        return back()->with('success', 'Rapport soumis pour validation.');
+    }
+
+    /**
+     * Validate report (admin/chef only)
+     */
+    public function validate(Report $report)
+    {
+        if (!Auth::user()->isAdmin() && !Auth::user()->isChefEquipe()) {
+            abort(403, 'Vous n\'avez pas l\'autorisation de valider ce rapport.');
+        }
+
+        if ($report->statut !== 'soumis') {
+            return back()->with('error', 'Seuls les rapports soumis peuvent être validés.');
+        }
+
+        $report->validate();
+
+        return back()->with('success', 'Rapport validé avec succès.');
+    }
+
+    /**
+     * Reject report (admin/chef only)
+     */
+    public function reject(Request $request, Report $report)
+    {
+        if (!Auth::user()->isAdmin() && !Auth::user()->isChefEquipe()) {
+            abort(403, 'Vous n\'avez pas l\'autorisation de rejeter ce rapport.');
+        }
+
+        if ($report->statut !== 'soumis') {
+            return back()->with('error', 'Seuls les rapports soumis peuvent être rejetés.');
+        }
+
+        $request->validate([
+            'reason' => 'required|string|max:500',
+        ], [
+            'reason.required' => 'La raison du rejet est obligatoire.',
+        ]);
+
+        $report->reject();
+
+        // Ajouter la raison dans les commentaires (si le champ existe)
+        $report->update([
+            'commentaires_validation' => $request->reason
+        ]);
+
+        return back()->with('success', 'Rapport rejeté.');
+    }
+
+    /**
+     * Upload photo to report
+     */
+    public function uploadPhoto(Request $request, Report $report)
+    {
+        $this->authorize('update', $report);
+
+        $request->validate([
+            'photo' => 'required|image|mimes:jpeg,png,jpg,gif|max:5120',
+        ]);
+
+        $filename = Str::uuid() . '.' . $request->file('photo')->getClientOriginalExtension();
+        $path = $request->file('photo')->storeAs('reports/photos', $filename, 'public');
+
+        $photos = $report->photos ?? [];
+        $photos[] = $path;
+        $report->update(['photos' => $photos]);
 
         return response()->json([
             'success' => true,
-            'message' => 'Pièce jointe supprimée avec succès'
+            'message' => 'Photo ajoutée avec succès.',
+            'photo_url' => Storage::url($path),
+            'photo_path' => $path,
         ]);
     }
 
     /**
-     * CORRECTION 3 : Export en HTML formaté (Alternative au PDF)
-     * FONCTIONNE SANS AUCUN PACKAGE EXTERNE
+     * Delete photo from report
      */
-    public function exportHTML(Report $report)
+    public function deletePhoto(Report $report, $photoIndex)
     {
-        $this->authorize('view', $report);
+        $this->authorize('update', $report);
 
-        $report->load('user', 'task.project', 'event', 'piecesJointes');
+        $photos = $report->photos ?? [];
 
-        // Générer le HTML avec style CSS intégré
-        $html = $this->generateReportHTML($report);
-        $filename = 'rapport_' . $report->id . '_' . date('Y-m-d') . '.html';
+        if (!isset($photos[$photoIndex])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Photo non trouvée.',
+            ], 404);
+        }
 
-        $this->logAction('EXPORT', "Export HTML du rapport: {$report->titre}");
+        // Supprimer le fichier
+        Storage::disk('public')->delete($photos[$photoIndex]);
 
-        return response($html)
-            ->header('Content-Type', 'text/html; charset=utf-8')
-            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"')
-            ->header('Cache-Control', 'no-cache, no-store, must-revalidate')
-            ->header('Pragma', 'no-cache')
-            ->header('Expires', '0');
+        // Retirer de la liste
+        unset($photos[$photoIndex]);
+        $photos = array_values($photos); // Réindexer
+
+        $report->update(['photos' => $photos]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Photo supprimée avec succès.',
+        ]);
     }
 
     /**
-     * Export en format texte simple (Alternative PDF #2)
+     * Download report as PDF
      */
-    public function exportText(Report $report)
+    public function downloadPdf(Report $report)
     {
         $this->authorize('view', $report);
 
-        $report->load('user', 'task.project', 'event', 'piecesJointes');
+        $report->load(['user', 'event', 'project']);
 
-        $content = $this->generateReportText($report);
-        $filename = 'rapport_' . $report->id . '_' . date('Y-m-d') . '.txt';
-
-        $this->logAction('EXPORT', "Export TXT du rapport: {$report->titre}");
-
-        return response($content)
-            ->header('Content-Type', 'text/plain; charset=utf-8')
-            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
+        // Ici vous pouvez utiliser une librairie comme DomPDF ou wkhtmltopdf
+        // Pour la démo, on retourne une vue HTML qui peut être imprimée
+        return view('reports.pdf', compact('report'));
     }
 
     /**
-     * Afficher le rapport dans le navigateur pour impression
+     * Get reports statistics
      */
-    public function printView(Report $report)
+    public function stats()
     {
-        $this->authorize('view', $report);
-
-        $report->load('user', 'task.project', 'event', 'piecesJointes');
-
-        $this->logAction('IMPRESSION', "Affichage impression du rapport: {$report->titre}");
-
-        return view('reports.print', compact('report'));
-    }
-
-    /**
-     * Statistiques des rapports
-     */
-    public function statistics()
-    {
-        $user = Auth::user();
         $query = Report::query();
 
-        if ($user->role === 'technicien') {
-            $query->where('id_utilisateur', $user->id);
+        // Filtrage selon le rôle
+        if (!Auth::user()->isAdmin() && !Auth::user()->isChefEquipe()) {
+            $query->where('user_id', Auth::id());
         }
-
-        $currentYear = Carbon::now()->year;
-        $currentMonth = Carbon::now()->month;
 
         $stats = [
-            'total_reports' => $query->count(),
-            'this_year' => $query->whereYear('date_creation', $currentYear)->count(),
-            'this_month' => $query->whereYear('date_creation', $currentYear)
-                                 ->whereMonth('date_creation', $currentMonth)->count(),
-            'last_30_days' => $query->where('date_creation', '>=', Carbon::now()->subDays(30))->count(),
+            'total' => $query->count(),
+            'this_month' => $query->clone()->thisMonth()->count(),
+            'validated' => $query->clone()->where('statut', 'valide')->count(),
+            'pending' => $query->clone()->where('statut', 'soumis')->count(),
+            'draft' => $query->clone()->where('statut', 'brouillon')->count(),
+            'by_type' => $query->clone()->selectRaw('type, COUNT(*) as count')
+                ->groupBy('type')
+                ->pluck('count', 'type'),
+            'by_status' => $query->clone()->selectRaw('statut, COUNT(*) as count')
+                ->groupBy('statut')
+                ->pluck('count', 'statut'),
+            'total_cost' => $query->clone()->sum('cout_intervention'),
+            'average_cost' => $query->clone()->avg('cout_intervention'),
         ];
 
-        // Rapports par type d'intervention
-        $reportsByType = $query->selectRaw('type_intervention, count(*) as count')
-                              ->groupBy('type_intervention')
-                              ->orderBy('count', 'desc')
-                              ->get();
-
-        // Rapports par mois (12 derniers mois)
-        $reportsByMonth = collect();
-        for ($i = 11; $i >= 0; $i--) {
-            $date = Carbon::now()->subMonths($i);
-            $count = $query->whereYear('date_creation', $date->year)
-                          ->whereMonth('date_creation', $date->month)
-                          ->count();
-
-            $reportsByMonth->push([
-                'month' => $date->format('M Y'),
-                'count' => $count
-            ]);
-        }
-
-        // Rapports par technicien (admin seulement)
-        $reportsByUser = collect();
-        if ($user->role === 'admin') {
-            $reportsByUser = User::withCount('reports')
-                                ->where('statut', 'actif')
-                                ->where('role', 'technicien')
-                                ->orderBy('reports_count', 'desc')
-                                ->get();
-        }
-
-        return view('reports.statistics', compact(
-            'stats',
-            'reportsByType',
-            'reportsByMonth',
-            'reportsByUser'
-        ));
+        return response()->json([
+            'success' => true,
+            'stats' => $stats
+        ]);
     }
 
     /**
-     * Sauvegarder une pièce jointe
+     * Export reports
      */
-    private function storeAttachment($file, $report)
+    public function export(Request $request)
     {
-        try {
-            $originalName = $file->getClientOriginalName();
-            $extension = $file->getClientOriginalExtension();
-            $size = $file->getSize();
-            $mimeType = $file->getMimeType();
+        $query = Report::with(['user', 'event', 'project']);
 
-            // Générer un nom unique pour le fichier
-            $fileName = time() . '_' . uniqid() . '.' . $extension;
-            $path = $file->storeAs('reports/' . $report->id, $fileName, 'public');
-
-            PieceJointe::create([
-                'nom_fichier' => $originalName,
-                'type_fichier' => $mimeType,
-                'taille' => $size,
-                'chemin' => $path,
-                'id_rapport' => $report->id,
-            ]);
-
-            return true;
-
-        } catch (\Exception $e) {
-            Log::error('Erreur sauvegarde pièce jointe: ' . $e->getMessage());
-            return false;
+        // Filtrage selon le rôle
+        if (!Auth::user()->isAdmin() && !Auth::user()->isChefEquipe()) {
+            $query->where('user_id', Auth::id());
         }
+
+        // Appliquer les mêmes filtres que l'index
+        if ($request->filled('type')) {
+            $query->where('type', $request->type);
+        }
+
+        if ($request->filled('status')) {
+            $query->where('statut', $request->status);
+        }
+
+        if ($request->filled('date_from')) {
+            $query->whereDate('date_intervention', '>=', $request->date_from);
+        }
+
+        if ($request->filled('date_to')) {
+            $query->whereDate('date_intervention', '<=', $request->date_to);
+        }
+
+        $reports = $query->orderBy('date_intervention', 'desc')->get();
+
+        return view('reports.export', compact('reports'));
     }
 
     /**
-     * Générer le HTML formaté pour l'export
+     * Duplicate report
      */
-    private function generateReportHTML($report)
+    public function duplicate(Report $report)
     {
-        $html = '<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rapport d\'intervention - ' . htmlspecialchars($report->titre) . '</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            margin: 20px;
-            color: #333;
-        }
-        .header {
-            text-align: center;
-            border-bottom: 2px solid #2c5aa0;
-            padding-bottom: 20px;
-            margin-bottom: 30px;
-        }
-        .header h1 {
-            color: #2c5aa0;
-            margin: 0;
-            font-size: 24px;
-        }
-        .header h2 {
-            color: #666;
-            margin: 5px 0;
-            font-size: 18px;
-        }
-        .info-section {
-            background: #f8f9fa;
-            border-left: 4px solid #2c5aa0;
-            padding: 15px;
-            margin: 20px 0;
-        }
-        .info-section h3 {
-            color: #2c5aa0;
-            margin-top: 0;
-            border-bottom: 1px solid #ddd;
-            padding-bottom: 5px;
-        }
-        .info-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin: 10px 0;
-        }
-        .info-item {
-            padding: 5px 0;
-        }
-        .info-item strong {
-            color: #2c5aa0;
-        }
-        .content-section {
-            margin: 20px 0;
-            padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-        }
-        .signature {
-            margin-top: 50px;
-            text-align: right;
-            padding-top: 20px;
-            border-top: 1px solid #ddd;
-        }
-        @media print {
-            body { margin: 0; }
-            .no-print { display: none; }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>OFFICE RÉGIONAL DE MISE EN VALEUR AGRICOLE DU TADLA</h1>
-        <h2>Rapport d\'Intervention Technique</h2>
-        <p>Généré le ' . Carbon::now()->format('d/m/Y à H:i') . '</p>
-    </div>
+        $this->authorize('create', Report::class);
 
-    <div class="info-section">
-        <h3>Informations générales</h3>
-        <div class="info-grid">
-            <div class="info-item"><strong>Titre :</strong> ' . htmlspecialchars($report->titre) . '</div>
-            <div class="info-item"><strong>Date d\'intervention :</strong> ' . Carbon::parse($report->date_intervention)->format('d/m/Y') . '</div>
-            <div class="info-item"><strong>Lieu :</strong> ' . htmlspecialchars($report->lieu) . '</div>
-            <div class="info-item"><strong>Type :</strong> ' . htmlspecialchars($report->type_intervention) . '</div>
-            <div class="info-item"><strong>Technicien :</strong> ' . htmlspecialchars($report->user->prenom . ' ' . $report->user->nom) . '</div>
-            <div class="info-item"><strong>Date de création :</strong> ' . Carbon::parse($report->date_creation)->format('d/m/Y à H:i') . '</div>
-        </div>';
+        $newReport = $report->replicate();
+        $newReport->titre = 'Copie de ' . $report->titre;
+        $newReport->statut = 'brouillon';
+        $newReport->date_intervention = now()->format('Y-m-d');
+        $newReport->photos = null; // Ne pas copier les photos
+        $newReport->user_id = Auth::id();
+        $newReport->save();
 
-        if ($report->task) {
-            $html .= '<div class="info-item"><strong>Tâche associée :</strong> ' . htmlspecialchars($report->task->titre) . '</div>';
-        }
-
-        if ($report->event) {
-            $html .= '<div class="info-item"><strong>Événement associé :</strong> ' . htmlspecialchars($report->event->titre) . '</div>';
-        }
-
-        $html .= '</div>
-
-    <div class="content-section">
-        <h3>Actions réalisées</h3>
-        <p>' . nl2br(htmlspecialchars($report->actions)) . '</p>
-    </div>
-
-    <div class="content-section">
-        <h3>Résultats obtenus</h3>
-        <p>' . nl2br(htmlspecialchars($report->resultats)) . '</p>
-    </div>';
-
-        if ($report->problemes) {
-            $html .= '<div class="content-section">
-        <h3>Problèmes rencontrés</h3>
-        <p>' . nl2br(htmlspecialchars($report->problemes)) . '</p>
-    </div>';
-        }
-
-        if ($report->recommandations) {
-            $html .= '<div class="content-section">
-        <h3>Recommandations</h3>
-        <p>' . nl2br(htmlspecialchars($report->recommandations)) . '</p>
-    </div>';
-        }
-
-        if ($report->piecesJointes->count() > 0) {
-            $html .= '<div class="content-section">
-        <h3>Pièces jointes</h3>
-        <ul>';
-            foreach ($report->piecesJointes as $attachment) {
-                $html .= '<li>' . htmlspecialchars($attachment->nom_fichier) . ' (' . $this->formatFileSize($attachment->taille) . ')</li>';
-            }
-            $html .= '</ul>
-    </div>';
-        }
-
-        $html .= '<div class="signature">
-        <p><strong>Signature du technicien :</strong> _____________________</p>
-        <p><em>Ce rapport a été généré automatiquement par le système PlanifTech</em></p>
-    </div>
-</body>
-</html>';
-
-        return $html;
-    }
-
-    /**
-     * Générer le contenu texte pour l'export
-     */
-    private function generateReportText($report)
-    {
-        $content = "===========================================\n";
-        $content .= "OFFICE RÉGIONAL DE MISE EN VALEUR AGRICOLE DU TADLA\n";
-        $content .= "RAPPORT D'INTERVENTION TECHNIQUE\n";
-        $content .= "===========================================\n\n";
-
-        $content .= "INFORMATIONS GÉNÉRALES\n";
-        $content .= "----------------------\n";
-        $content .= "Titre : " . $report->titre . "\n";
-        $content .= "Date d'intervention : " . Carbon::parse($report->date_intervention)->format('d/m/Y') . "\n";
-        $content .= "Lieu : " . $report->lieu . "\n";
-        $content .= "Type d'intervention : " . $report->type_intervention . "\n";
-        $content .= "Technicien : " . $report->user->prenom . ' ' . $report->user->nom . "\n";
-        $content .= "Date de création : " . Carbon::parse($report->date_creation)->format('d/m/Y à H:i') . "\n\n";
-
-        $content .= "ACTIONS RÉALISÉES\n";
-        $content .= "-----------------\n";
-        $content .= $report->actions . "\n\n";
-
-        $content .= "RÉSULTATS OBTENUS\n";
-        $content .= "-----------------\n";
-        $content .= $report->resultats . "\n\n";
-
-        if ($report->problemes) {
-            $content .= "PROBLÈMES RENCONTRÉS\n";
-            $content .= "--------------------\n";
-            $content .= $report->problemes . "\n\n";
-        }
-
-        if ($report->recommandations) {
-            $content .= "RECOMMANDATIONS\n";
-            $content .= "---------------\n";
-            $content .= $report->recommandations . "\n\n";
-        }
-
-        $content .= "===========================================\n";
-        $content .= "Rapport généré le " . Carbon::now()->format('d/m/Y à H:i') . "\n";
-        $content .= "Système PlanifTech - ORMVAT\n";
-
-        return $content;
-    }
-
-    /**
-     * Formater la taille de fichier
-     */
-    private function formatFileSize($bytes)
-    {
-        if ($bytes >= 1048576) {
-            return number_format($bytes / 1048576, 2) . ' MB';
-        } elseif ($bytes >= 1024) {
-            return number_format($bytes / 1024, 2) . ' KB';
-        } else {
-            return $bytes . ' bytes';
-        }
-    }
-
-    /**
-     * API pour obtenir les rapports récents
-     */
-    public function getRecentReports()
-    {
-        $user = Auth::user();
-        $query = Report::with('user');
-
-        if ($user->role === 'technicien') {
-            $query->where('id_utilisateur', $user->id);
-        }
-
-        $reports = $query->orderBy('date_creation', 'desc')
-                        ->limit(10)
-                        ->get();
-
-        return response()->json($reports);
-    }
-
-    /**
-     * Recherche avancée de rapports
-     */
-    public function search(Request $request)
-    {
-        $user = Auth::user();
-        $query = Report::with('user', 'task', 'event');
-
-        if ($user->role === 'technicien') {
-            $query->where('id_utilisateur', $user->id);
-        }
-
-        if ($request->filled('q')) {
-            $search = $request->q;
-            $query->where(function($q) use ($search) {
-                $q->where('titre', 'like', "%{$search}%")
-                  ->orWhere('lieu', 'like', "%{$search}%")
-                  ->orWhere('type_intervention', 'like', "%{$search}%")
-                  ->orWhere('actions', 'like', "%{$search}%")
-                  ->orWhere('resultats', 'like', "%{$search}%");
-            });
-        }
-
-        $reports = $query->orderBy('date_creation', 'desc')
-                        ->paginate(20);
-
-        return response()->json($reports);
-    }
-
-    /**
-     * CORRECTION 4 : Log des actions - Version corrigée
-     */
-    private function logAction($type, $description)
-    {
-        try {
-            // Vérifier si le modèle Journal existe
-            if (class_exists('\App\Models\Journal')) {
-                \App\Models\Journal::create([
-                    'date' => now(),
-                    'type_action' => $type,
-                    'description' => $description,
-                    'utilisateur_id' => Auth::id(),
-                    'adresse_ip' => request()->ip(),
-                ]);
-            } else {
-                // Fallback : utiliser les logs Laravel standards
-                Log::info("Action {$type}: {$description}", [
-                    'user_id' => Auth::id(),
-                    'ip' => request()->ip(),
-                    'timestamp' => now()
-                ]);
-            }
-        } catch (\Exception $e) {
-            // Log silencieux pour ne pas casser l'application
-            Log::warning('Erreur lors du logging: ' . $e->getMessage());
-        }
+        return redirect()->route('reports.edit', $newReport)
+            ->with('success', 'Rapport dupliqué avec succès.');
     }
 }

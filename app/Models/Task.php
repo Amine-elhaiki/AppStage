@@ -10,484 +10,192 @@ class Task extends Model
 {
     use HasFactory;
 
-    /**
-     * The table associated with the model.
-     */
-    protected $table = 'tasks';
-
-    /**
-     * The attributes that are mass assignable.
-     */
     protected $fillable = [
         'titre',
         'description',
-        'date_echeance',
-        'priorite',
         'statut',
+        'priorite',
+        'date_creation',
+        'date_echeance',
+        'date_debut_reelle',
+        'date_fin_reelle',
         'progression',
-        'id_utilisateur',
-        'id_projet',
-        'id_evenement',
+        'commentaires',
+        'user_id',
+        'project_id',
+        'created_by',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
-        'date_echeance' => 'date',
         'date_creation' => 'datetime',
-        'date_modification' => 'datetime',
-        'progression' => 'integer',
+        'date_echeance' => 'datetime',
+        'date_debut_reelle' => 'datetime',
+        'date_fin_reelle' => 'datetime',
     ];
 
     /**
-     * Boot method for the model
-     */
-    protected static function boot()
-    {
-        parent::boot();
-
-        static::creating(function ($model) {
-            $model->date_creation = now();
-        });
-
-        static::updating(function ($model) {
-            $model->date_modification = now();
-        });
-    }
-
-    /**
-     * Relationship: User assigned to this task
+     * Relations
      */
     public function user()
     {
-        return $this->belongsTo(User::class, 'id_utilisateur');
+        return $this->belongsTo(User::class);
     }
 
-    /**
-     * Relationship: Project this task belongs to
-     */
     public function project()
     {
-        return $this->belongsTo(Project::class, 'id_projet');
+        return $this->belongsTo(Project::class);
     }
 
-    /**
-     * Relationship: Event this task is associated with
-     */
-    public function event()
+    public function creator()
     {
-        return $this->belongsTo(Event::class, 'id_evenement');
+        return $this->belongsTo(User::class, 'created_by');
     }
 
     /**
-     * Relationship: Reports related to this task
+     * Accessors
      */
-    public function reports()
+    public function getStatusLabelAttribute()
     {
-        return $this->hasMany(Report::class, 'id_tache');
+        return match($this->statut) {
+            'a_faire' => 'À faire',
+            'en_cours' => 'En cours',
+            'termine' => 'Terminé',
+            'reporte' => 'Reporté',
+            'annule' => 'Annulé',
+            default => $this->statut
+        };
     }
 
-    /**
-     * Scope: Tasks by status
-     */
-    public function scopeByStatus($query, $status)
+    public function getPriorityLabelAttribute()
     {
-        return $query->where('statut', $status);
+        return match($this->priorite) {
+            'basse' => 'Basse',
+            'normale' => 'Normale',
+            'haute' => 'Haute',
+            'urgente' => 'Urgente',
+            default => $this->priorite
+        };
     }
 
-    /**
-     * Scope: Tasks by priority
-     */
-    public function scopeByPriority($query, $priority)
+    public function getStatusColorAttribute()
     {
-        return $query->where('priorite', $priority);
+        return match($this->statut) {
+            'a_faire' => 'secondary',
+            'en_cours' => 'primary',
+            'termine' => 'success',
+            'reporte' => 'warning',
+            'annule' => 'danger',
+            default => 'secondary'
+        };
+    }
+
+    public function getPriorityColorAttribute()
+    {
+        return match($this->priorite) {
+            'basse' => 'success',
+            'normale' => 'info',
+            'haute' => 'warning',
+            'urgente' => 'danger',
+            default => 'secondary'
+        };
     }
 
     /**
-     * Scope: Pending tasks (à faire or en cours)
+     * Scopes
      */
-    public function scopePending($query)
+    public function scopeActive($query)
     {
         return $query->whereIn('statut', ['a_faire', 'en_cours']);
     }
 
-    /**
-     * Scope: Completed tasks
-     */
     public function scopeCompleted($query)
     {
         return $query->where('statut', 'termine');
     }
 
-    /**
-     * Scope: Overdue tasks
-     */
     public function scopeOverdue($query)
     {
-        return $query->where('date_echeance', '<', Carbon::today())
-                    ->whereIn('statut', ['a_faire', 'en_cours']);
+        return $query->where('statut', '!=', 'termine')
+                    ->where('date_echeance', '<', now());
     }
 
-    /**
-     * Scope: High priority tasks
-     */
-    public function scopeHighPriority($query)
+    public function scopeByPriority($query, $priority)
     {
-        return $query->where('priorite', 'haute');
+        return $query->where('priorite', $priority);
     }
 
-    /**
-     * Scope: Tasks due today
-     */
     public function scopeDueToday($query)
     {
-        return $query->whereDate('date_echeance', Carbon::today());
+        return $query->whereDate('date_echeance', today());
     }
 
-    /**
-     * Scope: Tasks due this week
-     */
-    public function scopeDueThisWeek($query)
+    public function scopeForUser($query, $userId)
     {
-        return $query->whereBetween('date_echeance', [
-            Carbon::now()->startOfWeek(),
-            Carbon::now()->endOfWeek()
-        ]);
+        return $query->where('user_id', $userId);
     }
 
     /**
-     * Scope: Tasks assigned to specific user
-     */
-    public function scopeAssignedTo($query, $userId)
-    {
-        return $query->where('id_utilisateur', $userId);
-    }
-
-    /**
-     * Scope: Tasks in specific project
-     */
-    public function scopeInProject($query, $projectId)
-    {
-        return $query->where('id_projet', $projectId);
-    }
-
-    /**
-     * Check if task is overdue
+     * Methods
      */
     public function isOverdue()
     {
-        return $this->date_echeance < Carbon::today() &&
-               in_array($this->statut, ['a_faire', 'en_cours']);
+        return $this->date_echeance &&
+               $this->statut !== 'termine' &&
+               $this->date_echeance->isPast();
     }
 
-    /**
-     * Check if task is due today
-     */
     public function isDueToday()
     {
-        return $this->date_echeance->isToday() &&
-               in_array($this->statut, ['a_faire', 'en_cours']);
+        return $this->date_echeance && $this->date_echeance->isToday();
     }
 
-    /**
-     * Check if task is due this week
-     */
-    public function isDueThisWeek()
+    public function isDueSoon($days = 3)
     {
-        return $this->date_echeance->between(
-            Carbon::now()->startOfWeek(),
-            Carbon::now()->endOfWeek()
-        ) && in_array($this->statut, ['a_faire', 'en_cours']);
+        return $this->date_echeance &&
+               $this->date_echeance->between(now(), now()->addDays($days));
     }
 
-    /**
-     * Check if task is completed
-     */
-    public function isCompleted()
+    public function start()
     {
-        return $this->statut === 'termine';
+        $this->update([
+            'statut' => 'en_cours',
+            'date_debut_reelle' => now(),
+        ]);
     }
 
-    /**
-     * Check if task is in progress
-     */
-    public function isInProgress()
+    public function complete()
     {
-        return $this->statut === 'en_cours';
+        $this->update([
+            'statut' => 'termine',
+            'date_fin_reelle' => now(),
+            'progression' => 100,
+        ]);
     }
 
-    /**
-     * Check if task is pending
-     */
-    public function isPending()
+    public function updateProgress($percentage)
     {
-        return $this->statut === 'a_faire';
-    }
+        $this->update(['progression' => min(100, max(0, $percentage))]);
 
-    /**
-     * Check if task is high priority
-     */
-    public function isHighPriority()
-    {
-        return $this->priorite === 'haute';
-    }
-
-    /**
-     * Get priority label
-     */
-    public function getPriorityLabelAttribute()
-    {
-        $labels = [
-            'basse' => 'Basse',
-            'moyenne' => 'Moyenne',
-            'haute' => 'Haute'
-        ];
-
-        return $labels[$this->priorite] ?? 'Inconnue';
-    }
-
-    /**
-     * Get status label
-     */
-    public function getStatusLabelAttribute()
-    {
-        $labels = [
-            'a_faire' => 'À faire',
-            'en_cours' => 'En cours',
-            'termine' => 'Terminé'
-        ];
-
-        return $labels[$this->statut] ?? 'Inconnu';
-    }
-
-    /**
-     * Get priority color class for UI
-     */
-    public function getPriorityColorAttribute()
-    {
-        $colors = [
-            'basse' => 'success',
-            'moyenne' => 'warning',
-            'haute' => 'danger'
-        ];
-
-        return $colors[$this->priorite] ?? 'secondary';
-    }
-
-    /**
-     * Get status color class for UI
-     */
-    public function getStatusColorAttribute()
-    {
-        $colors = [
-            'a_faire' => 'secondary',
-            'en_cours' => 'primary',
-            'termine' => 'success'
-        ];
-
-        if ($this->isOverdue()) {
-            return 'danger';
-        }
-
-        return $colors[$this->statut] ?? 'secondary';
-    }
-
-    /**
-     * Get days remaining until due date
-     */
-    public function getDaysRemainingAttribute()
-    {
-        if ($this->isCompleted()) {
-            return 0;
-        }
-
-        $today = Carbon::today();
-        $dueDate = $this->date_echeance;
-
-        if ($dueDate < $today) {
-            return -$today->diffInDays($dueDate); // Negative for overdue
-        }
-
-        return $today->diffInDays($dueDate);
-    }
-
-    /**
-     * Get human readable time remaining
-     */
-    public function getTimeRemainingAttribute()
-    {
-        if ($this->isCompleted()) {
-            return 'Terminé';
-        }
-
-        $daysRemaining = $this->days_remaining;
-
-        if ($daysRemaining < 0) {
-            return 'En retard de ' . abs($daysRemaining) . ' jour(s)';
-        } elseif ($daysRemaining === 0) {
-            return 'Échéance aujourd\'hui';
-        } elseif ($daysRemaining === 1) {
-            return 'Échéance demain';
-        } else {
-            return 'Échéance dans ' . $daysRemaining . ' jour(s)';
+        if ($percentage >= 100) {
+            $this->complete();
         }
     }
 
-    /**
-     * Get estimated completion date based on current progression
-     */
-    public function getEstimatedCompletionAttribute()
+    public function getDurationInDays()
     {
-        if ($this->isCompleted()) {
-            return $this->date_modification;
-        }
-
-        if ($this->progression <= 0) {
+        if (!$this->date_debut_reelle || !$this->date_fin_reelle) {
             return null;
         }
 
-        $daysElapsed = Carbon::parse($this->date_creation)->diffInDays(Carbon::now());
-        $progressRate = $this->progression / 100;
+        return $this->date_debut_reelle->diffInDays($this->date_fin_reelle);
+    }
 
-        if ($progressRate > 0) {
-            $estimatedTotalDays = $daysElapsed / $progressRate;
-            $remainingDays = $estimatedTotalDays - $daysElapsed;
-
-            return Carbon::now()->addDays(max(0, $remainingDays));
+    public function getEstimatedDuration()
+    {
+        if (!$this->date_creation || !$this->date_echeance) {
+            return null;
         }
 
-        return null;
-    }
-
-    /**
-     * Get progress percentage with automatic calculation for certain statuses
-     */
-    public function getProgressPercentageAttribute()
-    {
-        switch ($this->statut) {
-            case 'a_faire':
-                return max(0, $this->progression);
-            case 'en_cours':
-                return max(1, $this->progression); // At least 1% for in-progress
-            case 'termine':
-                return 100;
-            default:
-                return $this->progression;
-        }
-    }
-
-    /**
-     * Update task progress and status automatically
-     */
-    public function updateProgress($percentage)
-    {
-        $this->progression = max(0, min(100, $percentage));
-
-        // Auto-update status based on progress
-        if ($this->progression >= 100) {
-            $this->statut = 'termine';
-        } elseif ($this->progression > 0 && $this->statut === 'a_faire') {
-            $this->statut = 'en_cours';
-        }
-
-        $this->save();
-    }
-
-    /**
-     * Mark task as started
-     */
-    public function markAsStarted()
-    {
-        $this->statut = 'en_cours';
-        if ($this->progression <= 0) {
-            $this->progression = 1;
-        }
-        $this->save();
-    }
-
-    /**
-     * Mark task as completed
-     */
-    public function markAsCompleted()
-    {
-        $this->statut = 'termine';
-        $this->progression = 100;
-        $this->save();
-    }
-
-    /**
-     * Get task urgency level (0-3)
-     * 0: Normal, 1: Important, 2: Urgent, 3: Critical
-     */
-    public function getUrgencyLevelAttribute()
-    {
-        $urgency = 0;
-
-        // Priority adds to urgency
-        if ($this->priorite === 'haute') {
-            $urgency += 2;
-        } elseif ($this->priorite === 'moyenne') {
-            $urgency += 1;
-        }
-
-        // Due date adds urgency
-        $daysRemaining = $this->days_remaining;
-        if ($daysRemaining < 0) {
-            $urgency += 2; // Overdue
-        } elseif ($daysRemaining <= 1) {
-            $urgency += 1; // Due today or tomorrow
-        }
-
-        return min(3, $urgency);
-    }
-
-    /**
-     * Get urgency label
-     */
-    public function getUrgencyLabelAttribute()
-    {
-        $labels = [
-            0 => 'Normal',
-            1 => 'Important',
-            2 => 'Urgent',
-            3 => 'Critique'
-        ];
-
-        return $labels[$this->urgency_level] ?? 'Normal';
-    }
-
-    /**
-     * Scope: Order by urgency (most urgent first)
-     */
-    public function scopeOrderByUrgency($query)
-    {
-        return $query->orderByRaw('
-            CASE
-                WHEN date_echeance < CURDATE() AND statut IN ("a_faire", "en_cours") THEN 4
-                WHEN date_echeance = CURDATE() AND statut IN ("a_faire", "en_cours") THEN 3
-                WHEN priorite = "haute" THEN 2
-                WHEN priorite = "moyenne" THEN 1
-                ELSE 0
-            END DESC
-        ')->orderBy('date_echeance', 'asc');
-    }
-
-    /**
-     * Check if task can be edited by given user
-     */
-    public function canBeEditedBy(User $user)
-    {
-        return $user->isAdmin() || $this->id_utilisateur === $user->id;
-    }
-
-    /**
-     * Check if task can be viewed by given user
-     */
-    public function canBeViewedBy(User $user)
-    {
-        return $user->isAdmin() ||
-               $this->id_utilisateur === $user->id ||
-               ($this->project && $this->project->id_responsable === $user->id);
+        return $this->date_creation->diffInDays($this->date_echeance);
     }
 }

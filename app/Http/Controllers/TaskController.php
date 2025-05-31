@@ -2,53 +2,42 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Task;
+use App\Models\Project;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Validator;
-use App\Models\Task;
-use App\Models\User;
-use App\Models\Project;
-use App\Models\Event;
-use Carbon\Carbon;
+use Illuminate\Validation\Rule;
 
 class TaskController extends Controller
 {
     /**
-     * Afficher la liste des tâches
+     * Display a listing of the resource.
      */
     public function index(Request $request)
     {
-        $user = Auth::user();
-        $query = Task::with('user', 'project', 'event');
+        $query = Task::with(['user', 'project', 'creator']);
 
         // Filtrage selon le rôle
-        if ($user->role === 'technicien') {
-            $query->where('id_utilisateur', $user->id);
+        if (!Auth::user()->isAdmin()) {
+            $query->where('user_id', Auth::id());
         }
 
-        // Filtres de recherche
-        if ($request->filled('statut')) {
-            $query->where('statut', $request->statut);
+        // Filtres
+        if ($request->filled('status')) {
+            $query->where('statut', $request->status);
         }
 
-        if ($request->filled('priorite')) {
-            $query->where('priorite', $request->priorite);
+        if ($request->filled('priority')) {
+            $query->where('priorite', $request->priority);
         }
 
-        if ($request->filled('utilisateur') && $user->role === 'admin') {
-            $query->where('id_utilisateur', $request->utilisateur);
+        if ($request->filled('project')) {
+            $query->where('project_id', $request->project);
         }
 
-        if ($request->filled('projet')) {
-            $query->where('id_projet', $request->projet);
-        }
-
-        if ($request->filled('date_debut')) {
-            $query->whereDate('date_echeance', '>=', $request->date_debut);
-        }
-
-        if ($request->filled('date_fin')) {
-            $query->whereDate('date_echeance', '<=', $request->date_fin);
+        if ($request->filled('user') && Auth::user()->isAdmin()) {
+            $query->where('user_id', $request->user);
         }
 
         if ($request->filled('search')) {
@@ -61,336 +50,320 @@ class TaskController extends Controller
 
         // Tri
         $sortBy = $request->get('sort', 'date_echeance');
-        $sortOrder = $request->get('order', 'asc');
-        $query->orderBy($sortBy, $sortOrder);
+        $sortDirection = $request->get('direction', 'asc');
 
-        $tasks = $query->paginate(15);
+        if (in_array($sortBy, ['titre', 'statut', 'priorite', 'date_echeance', 'created_at'])) {
+            $query->orderBy($sortBy, $sortDirection);
+        }
+
+        $tasks = $query->paginate(15)->withQueryString();
 
         // Données pour les filtres
-        $users = $user->role === 'admin' ? User::where('statut', 'actif')->get() : collect();
-        $projects = Project::where('statut', '!=', 'termine')->get();
+        $projects = Project::orderBy('nom')->get();
+        $users = Auth::user()->isAdmin() ? User::orderBy('prenom')->get() : collect();
 
-        return view('tasks.index', compact('tasks', 'users', 'projects'));
+        return view('tasks.index', compact('tasks', 'projects', 'users'));
     }
 
     /**
-     * Afficher le formulaire de création d'une tâche
+     * Show the form for creating a new resource.
      */
     public function create()
     {
         $this->authorize('create', Task::class);
 
-        $users = User::where('statut', 'actif')->where('role', 'technicien')->get();
-        $projects = Project::where('statut', '!=', 'termine')->get();
-        $events = Event::where('statut', 'planifie')->get();
+        $projects = Project::active()->orderBy('nom')->get();
+        $users = User::active()->orderBy('prenom')->get();
 
-        return view('tasks.create', compact('users', 'projects', 'events'));
+        return view('tasks.create', compact('projects', 'users'));
     }
 
     /**
-     * Enregistrer une nouvelle tâche
+     * Store a newly created resource in storage.
      */
     public function store(Request $request)
     {
         $this->authorize('create', Task::class);
 
-        $validator = Validator::make($request->all(), [
-            'titre' => 'required|string|max:100',
+        $request->validate([
+            'titre' => 'required|string|max:255',
             'description' => 'required|string',
-            'date_echeance' => 'required|date|after_or_equal:today',
-            'priorite' => 'required|in:basse,moyenne,haute',
-            'id_utilisateur' => 'required|exists:users,id',
-            'id_projet' => 'nullable|exists:projects,id',
-            'id_evenement' => 'nullable|exists:events,id',
+            'priorite' => 'required|in:basse,normale,haute,urgente',
+            'date_echeance' => 'nullable|date|after:today',
+            'user_id' => 'required|exists:users,id',
+            'project_id' => 'nullable|exists:projects,id',
         ], [
             'titre.required' => 'Le titre est obligatoire.',
             'description.required' => 'La description est obligatoire.',
-            'date_echeance.required' => 'La date d\'échéance est obligatoire.',
-            'date_echeance.after_or_equal' => 'La date d\'échéance ne peut pas être antérieure à aujourd\'hui.',
-            'id_utilisateur.required' => 'Vous devez assigner la tâche à un technicien.',
-            'id_utilisateur.exists' => 'Le technicien sélectionné n\'existe pas.',
+            'priorite.required' => 'La priorité est obligatoire.',
+            'date_echeance.after' => 'La date d\'échéance doit être dans le futur.',
+            'user_id.required' => 'L\'assignation à un utilisateur est obligatoire.',
+            'user_id.exists' => 'L\'utilisateur sélectionné n\'existe pas.',
+            'project_id.exists' => 'Le projet sélectionné n\'existe pas.',
         ]);
-
-        if ($validator->fails()) {
-            return back()->withErrors($validator)->withInput();
-        }
 
         $task = Task::create([
             'titre' => $request->titre,
             'description' => $request->description,
-            'date_echeance' => $request->date_echeance,
-            'priorite' => $request->priorite,
             'statut' => 'a_faire',
+            'priorite' => $request->priorite,
+            'date_creation' => now(),
+            'date_echeance' => $request->date_echeance,
             'progression' => 0,
-            'id_utilisateur' => $request->id_utilisateur,
-            'id_projet' => $request->id_projet,
-            'id_evenement' => $request->id_evenement,
+            'commentaires' => $request->commentaires,
+            'user_id' => $request->user_id,
+            'project_id' => $request->project_id,
+            'created_by' => Auth::id(),
         ]);
 
-        // Log de l'action
-        $this->logAction('CREATION', "Création de la tâche: {$task->titre}");
-
-        return redirect()->route('tasks.index')
-                        ->with('success', 'Tâche créée avec succès.');
+        return redirect()->route('tasks.show', $task)
+            ->with('success', 'Tâche créée avec succès.');
     }
 
     /**
-     * Afficher les détails d'une tâche
+     * Display the specified resource.
      */
     public function show(Task $task)
     {
         $this->authorize('view', $task);
 
-        $task->load('user', 'project', 'event');
+        $task->load(['user', 'project', 'creator']);
 
         return view('tasks.show', compact('task'));
     }
 
     /**
-     * Afficher le formulaire d'édition
+     * Show the form for editing the specified resource.
      */
     public function edit(Task $task)
     {
         $this->authorize('update', $task);
 
-        $users = User::where('statut', 'actif')->where('role', 'technicien')->get();
-        $projects = Project::where('statut', '!=', 'termine')->get();
-        $events = Event::where('statut', 'planifie')->get();
+        $projects = Project::active()->orderBy('nom')->get();
+        $users = User::active()->orderBy('prenom')->get();
 
-        return view('tasks.edit', compact('task', 'users', 'projects', 'events'));
+        return view('tasks.edit', compact('task', 'projects', 'users'));
     }
 
     /**
-     * Mettre à jour une tâche
+     * Update the specified resource in storage.
      */
     public function update(Request $request, Task $task)
     {
         $this->authorize('update', $task);
 
-        $validator = Validator::make($request->all(), [
-            'titre' => 'required|string|max:100',
+        $request->validate([
+            'titre' => 'required|string|max:255',
             'description' => 'required|string',
-            'date_echeance' => 'required|date',
-            'priorite' => 'required|in:basse,moyenne,haute',
-            'statut' => 'required|in:a_faire,en_cours,termine',
+            'statut' => 'required|in:a_faire,en_cours,termine,reporte,annule',
+            'priorite' => 'required|in:basse,normale,haute,urgente',
+            'date_echeance' => 'nullable|date',
             'progression' => 'required|integer|min:0|max:100',
-            'id_utilisateur' => 'required|exists:users,id',
-            'id_projet' => 'nullable|exists:projects,id',
-            'id_evenement' => 'nullable|exists:events,id',
+            'user_id' => 'required|exists:users,id',
+            'project_id' => 'nullable|exists:projects,id',
         ]);
 
-        if ($validator->fails()) {
-            return back()->withErrors($validator)->withInput();
+        // Gestion automatique des dates selon le statut
+        $data = $request->only(['titre', 'description', 'statut', 'priorite', 'date_echeance', 'progression', 'commentaires', 'user_id', 'project_id']);
+
+        if ($request->statut === 'en_cours' && !$task->date_debut_reelle) {
+            $data['date_debut_reelle'] = now();
         }
 
-        $oldStatus = $task->statut;
-
-        $task->update([
-            'titre' => $request->titre,
-            'description' => $request->description,
-            'date_echeance' => $request->date_echeance,
-            'priorite' => $request->priorite,
-            'statut' => $request->statut,
-            'progression' => $request->progression,
-            'id_utilisateur' => $request->id_utilisateur,
-            'id_projet' => $request->id_projet,
-            'id_evenement' => $request->id_evenement,
-        ]);
-
-        // Log si changement de statut
-        if ($oldStatus !== $request->statut) {
-            $this->logAction('MODIFICATION', "Changement statut tâche '{$task->titre}': {$oldStatus} → {$request->statut}");
+        if ($request->statut === 'termine') {
+            $data['date_fin_reelle'] = now();
+            $data['progression'] = 100;
         }
 
-        return redirect()->route('tasks.index')
-                        ->with('success', 'Tâche mise à jour avec succès.');
+        $task->update($data);
+
+        return redirect()->route('tasks.show', $task)
+            ->with('success', 'Tâche mise à jour avec succès.');
     }
 
     /**
-     * Supprimer une tâche
+     * Remove the specified resource from storage.
      */
     public function destroy(Task $task)
     {
         $this->authorize('delete', $task);
 
-        $taskTitle = $task->titre;
         $task->delete();
 
-        $this->logAction('SUPPRESSION', "Suppression de la tâche: {$taskTitle}");
-
         return redirect()->route('tasks.index')
-                        ->with('success', 'Tâche supprimée avec succès.');
+            ->with('success', 'Tâche supprimée avec succès.');
     }
 
     /**
-     * API pour mettre à jour le statut rapidement (AJAX)
+     * Update task status via AJAX
      */
     public function updateStatus(Request $request, Task $task)
     {
         $this->authorize('update', $task);
 
-        $validator = Validator::make($request->all(), [
-            'statut' => 'required|in:a_faire,en_cours,termine',
-            'progression' => 'nullable|integer|min:0|max:100',
+        $request->validate([
+            'statut' => 'required|in:a_faire,en_cours,termine,reporte,annule',
         ]);
 
-        if ($validator->fails()) {
-            return response()->json(['error' => 'Données invalides'], 400);
+        $data = ['statut' => $request->statut];
+
+        // Gestion automatique des dates et progression
+        if ($request->statut === 'en_cours' && !$task->date_debut_reelle) {
+            $data['date_debut_reelle'] = now();
         }
 
-        $oldStatus = $task->statut;
-
-        $task->statut = $request->statut;
-
-        if ($request->filled('progression')) {
-            $task->progression = $request->progression;
-        } else {
-            // Progression automatique selon le statut
-            switch ($request->statut) {
-                case 'a_faire':
-                    $task->progression = 0;
-                    break;
-                case 'en_cours':
-                    $task->progression = $task->progression ?: 25;
-                    break;
-                case 'termine':
-                    $task->progression = 100;
-                    break;
-            }
+        if ($request->statut === 'termine') {
+            $data['date_fin_reelle'] = now();
+            $data['progression'] = 100;
         }
 
-        $task->save();
-
-        // Log si changement de statut
-        if ($oldStatus !== $request->statut) {
-            $this->logAction('MODIFICATION', "Changement statut tâche '{$task->titre}': {$oldStatus} → {$request->statut}");
-        }
+        $task->update($data);
 
         return response()->json([
             'success' => true,
-            'message' => 'Statut mis à jour avec succès',
-            'task' => $task->load('user', 'project')
+            'message' => 'Statut mis à jour avec succès.',
+            'task' => [
+                'id' => $task->id,
+                'statut' => $task->statut,
+                'status_label' => $task->status_label,
+                'progression' => $task->progression,
+            ]
         ]);
     }
 
     /**
-     * API pour obtenir les tâches en retard
+     * Quick update via AJAX (for checkboxes, etc.)
      */
-    public function getOverdueTasks()
+    public function quickUpdate(Request $request, Task $task)
     {
-        $user = Auth::user();
-        $query = Task::with('user', 'project')
-                    ->where('date_echeance', '<', Carbon::today())
-                    ->whereIn('statut', ['a_faire', 'en_cours']);
+        $this->authorize('update', $task);
 
-        if ($user->role === 'technicien') {
-            $query->where('id_utilisateur', $user->id);
+        $request->validate([
+            'statut' => 'sometimes|in:a_faire,en_cours,termine,reporte,annule',
+            'progression' => 'sometimes|integer|min:0|max:100',
+        ]);
+
+        $data = $request->only(['statut', 'progression']);
+
+        // Gestion automatique
+        if (isset($data['statut'])) {
+            if ($data['statut'] === 'en_cours' && !$task->date_debut_reelle) {
+                $data['date_debut_reelle'] = now();
+            }
+
+            if ($data['statut'] === 'termine') {
+                $data['date_fin_reelle'] = now();
+                $data['progression'] = 100;
+            }
         }
 
-        $overdueTasks = $query->orderBy('date_echeance')->get();
+        if (isset($data['progression']) && $data['progression'] >= 100) {
+            $data['statut'] = 'termine';
+            $data['date_fin_reelle'] = now();
+        }
 
-        return response()->json($overdueTasks);
+        $task->update($data);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Tâche mise à jour avec succès.',
+            'task' => $task->fresh()
+        ]);
     }
 
     /**
-     * API pour obtenir les statistiques des tâches
+     * Duplicate a task
      */
-    public function getTaskStats()
+    public function duplicate(Task $task)
     {
-        $user = Auth::user();
+        $this->authorize('create', Task::class);
+
+        $newTask = $task->replicate();
+        $newTask->titre = 'Copie de ' . $task->titre;
+        $newTask->statut = 'a_faire';
+        $newTask->progression = 0;
+        $newTask->date_creation = now();
+        $newTask->date_debut_reelle = null;
+        $newTask->date_fin_reelle = null;
+        $newTask->created_by = Auth::id();
+        $newTask->save();
+
+        return redirect()->route('tasks.show', $newTask)
+            ->with('success', 'Tâche dupliquée avec succès.');
+    }
+
+    /**
+     * Search tasks via AJAX
+     */
+    public function search(Request $request)
+    {
+        $request->validate([
+            'q' => 'required|string|min:2',
+        ]);
+
+        $query = Task::with(['user', 'project'])
+            ->where('titre', 'like', '%' . $request->q . '%')
+            ->orWhere('description', 'like', '%' . $request->q . '%');
+
+        // Filtrage selon le rôle
+        if (!Auth::user()->isAdmin()) {
+            $query->where('user_id', Auth::id());
+        }
+
+        $tasks = $query->limit(10)->get();
+
+        return response()->json([
+            'success' => true,
+            'tasks' => $tasks->map(function ($task) {
+                return [
+                    'id' => $task->id,
+                    'titre' => $task->titre,
+                    'description' => Str::limit($task->description, 100),
+                    'statut' => $task->statut,
+                    'status_label' => $task->status_label,
+                    'status_color' => $task->status_color,
+                    'priorite' => $task->priorite,
+                    'priority_label' => $task->priority_label,
+                    'priority_color' => $task->priority_color,
+                    'progression' => $task->progression,
+                    'user' => $task->user ? [
+                        'nom' => $task->user->nom,
+                        'prenom' => $task->user->prenom,
+                        'initials' => $task->user->initials,
+                    ] : null,
+                    'project' => $task->project ? [
+                        'nom' => $task->project->nom,
+                    ] : null,
+                    'url' => route('tasks.show', $task),
+                ];
+            })
+        ]);
+    }
+
+    /**
+     * Get tasks statistics
+     */
+    public function stats()
+    {
         $query = Task::query();
 
-        if ($user->role === 'technicien') {
-            $query->where('id_utilisateur', $user->id);
+        // Filtrage selon le rôle
+        if (!Auth::user()->isAdmin()) {
+            $query->where('user_id', Auth::id());
         }
 
         $stats = [
             'total' => $query->count(),
-            'a_faire' => $query->where('statut', 'a_faire')->count(),
-            'en_cours' => $query->where('statut', 'en_cours')->count(),
-            'termine' => $query->where('statut', 'termine')->count(),
-            'en_retard' => $query->where('date_echeance', '<', Carbon::today())
-                                ->whereIn('statut', ['a_faire', 'en_cours'])
-                                ->count(),
-            'cette_semaine' => $query->whereBetween('date_echeance', [
-                                    Carbon::now()->startOfWeek(),
-                                    Carbon::now()->endOfWeek()
-                                ])->count(),
+            'a_faire' => $query->clone()->where('statut', 'a_faire')->count(),
+            'en_cours' => $query->clone()->where('statut', 'en_cours')->count(),
+            'termine' => $query->clone()->where('statut', 'termine')->count(),
+            'en_retard' => $query->clone()->overdue()->count(),
+            'due_today' => $query->clone()->dueToday()->count(),
         ];
 
-        return response()->json($stats);
-    }
-
-    /**
-     * Exporter les tâches en CSV
-     */
-    public function export(Request $request)
-    {
-        $user = Auth::user();
-        $query = Task::with('user', 'project');
-
-        if ($user->role === 'technicien') {
-            $query->where('id_utilisateur', $user->id);
-        }
-
-        // Appliquer les mêmes filtres que dans index()
-        if ($request->filled('statut')) {
-            $query->where('statut', $request->statut);
-        }
-
-        $tasks = $query->orderBy('date_echeance')->get();
-
-        $filename = 'taches_' . date('Y-m-d_H-i-s') . '.csv';
-
-        $headers = [
-            'Content-Type' => 'text/csv',
-            'Content-Disposition' => "attachment; filename=\"{$filename}\"",
-        ];
-
-        $callback = function() use ($tasks) {
-            $file = fopen('php://output', 'w');
-
-            // En-têtes CSV
-            fputcsv($file, [
-                'ID', 'Titre', 'Description', 'Date échéance', 'Priorité',
-                'Statut', 'Progression', 'Technicien', 'Projet', 'Date création'
-            ]);
-
-            // Données
-            foreach ($tasks as $task) {
-                fputcsv($file, [
-                    $task->id,
-                    $task->titre,
-                    $task->description,
-                    $task->date_echeance->format('d/m/Y'),
-                    ucfirst($task->priorite),
-                    ucfirst(str_replace('_', ' ', $task->statut)),
-                    $task->progression . '%',
-                    $task->user ? $task->user->nom . ' ' . $task->user->prenom : '',
-                    $task->project ? $task->project->nom : '',
-                    $task->date_creation->format('d/m/Y H:i')
-                ]);
-            }
-
-            fclose($file);
-        };
-
-        $this->logAction('EXPORT', 'Export des tâches en CSV');
-
-        return response()->stream($callback, 200, $headers);
-    }
-
-    /**
-     * Log des actions
-     */
-    private function logAction($type, $description)
-    {
-        \App\Models\Journal::create([
-            'date' => now(),
-            'type_action' => $type,
-            'description' => $description,
-            'utilisateur_id' => Auth::id(),
-            'adresse_ip' => request()->ip(),
+        return response()->json([
+            'success' => true,
+            'stats' => $stats
         ]);
     }
 }
