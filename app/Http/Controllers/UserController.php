@@ -2,34 +2,37 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Validator;
 use App\Models\User;
-use App\Models\Task;
-use App\Models\Project;
-use App\Models\Report;
-use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
+use Illuminate\Support\Str;
 
 class UserController extends Controller
 {
     /**
-     * Afficher la liste des utilisateurs (Admin seulement)
+     * Display a listing of the resource.
      */
     public function index(Request $request)
     {
         $this->authorize('viewAny', User::class);
 
-        $query = User::withCount(['assignedTasks', 'reports', 'managedProjects']);
+        $query = User::withCount(['tasks', 'tasks as completed_tasks_count' => function($q) {
+            $q->where('statut', 'termine');
+        }, 'reports', 'events']);
 
-        // Filtres de recherche
+        // Filtres
         if ($request->filled('role')) {
             $query->where('role', $request->role);
         }
 
-        if ($request->filled('statut')) {
-            $query->where('statut', $request->statut);
+        if ($request->filled('status')) {
+            $query->where('statut', $request->status);
+        }
+
+        if ($request->filled('specialite')) {
+            $query->where('specialite', 'like', '%' . $request->specialite . '%');
         }
 
         if ($request->filled('search')) {
@@ -38,22 +41,25 @@ class UserController extends Controller
                 $q->where('nom', 'like', "%{$search}%")
                   ->orWhere('prenom', 'like', "%{$search}%")
                   ->orWhere('email', 'like', "%{$search}%")
-                  ->orWhere('telephone', 'like', "%{$search}%");
+                  ->orWhere('specialite', 'like', "%{$search}%");
             });
         }
 
         // Tri
-        $sortBy = $request->get('sort', 'date_creation');
-        $sortOrder = $request->get('order', 'desc');
-        $query->orderBy($sortBy, $sortOrder);
+        $sortBy = $request->get('sort', 'created_at');
+        $sortDirection = $request->get('direction', 'desc');
 
-        $users = $query->paginate(15);
+        if (in_array($sortBy, ['nom', 'prenom', 'email', 'role', 'statut', 'derniere_connexion', 'created_at'])) {
+            $query->orderBy($sortBy, $sortDirection);
+        }
+
+        $users = $query->paginate(15)->withQueryString();
 
         return view('users.index', compact('users'));
     }
 
     /**
-     * Afficher le formulaire de création d'utilisateur
+     * Show the form for creating a new resource.
      */
     public function create()
     {
@@ -63,128 +69,91 @@ class UserController extends Controller
     }
 
     /**
-     * Enregistrer un nouvel utilisateur
+     * Store a newly created resource in storage.
      */
     public function store(Request $request)
     {
         $this->authorize('create', User::class);
 
-        $validator = Validator::make($request->all(), [
-            'nom' => 'required|string|max:50',
-            'prenom' => 'required|string|max:50',
-            'email' => 'required|email|max:100|unique:users,email',
+        $request->validate([
+            'nom' => 'required|string|max:255',
+            'prenom' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users',
+            'password' => 'required|string|min:8|confirmed',
+            'role' => 'required|in:admin,technicien,chef_equipe',
             'telephone' => 'nullable|string|max:20',
-            'role' => 'required|in:admin,technicien',
-            'statut' => 'required|in:actif,inactif',
-            'password' => 'required|min:6|confirmed',
+            'specialite' => 'nullable|string|max:255',
+            'statut' => 'required|in:actif,inactif,suspendu',
         ], [
             'nom.required' => 'Le nom est obligatoire.',
             'prenom.required' => 'Le prénom est obligatoire.',
-            'email.required' => 'L\'email est obligatoire.',
-            'email.unique' => 'Cet email est déjà utilisé.',
-            'role.required' => 'Le rôle est obligatoire.',
+            'email.required' => 'L\'adresse email est obligatoire.',
+            'email.email' => 'L\'adresse email doit être valide.',
+            'email.unique' => 'Cette adresse email est déjà utilisée.',
             'password.required' => 'Le mot de passe est obligatoire.',
-            'password.min' => 'Le mot de passe doit contenir au moins 6 caractères.',
+            'password.min' => 'Le mot de passe doit contenir au moins 8 caractères.',
             'password.confirmed' => 'La confirmation du mot de passe ne correspond pas.',
+            'role.required' => 'Le rôle est obligatoire.',
+            'statut.required' => 'Le statut est obligatoire.',
         ]);
 
-        if ($validator->fails()) {
-            return back()->withErrors($validator)->withInput();
-        }
+        // Définir les permissions par défaut selon le rôle
+        $permissions = match($request->role) {
+            'admin' => ['all'],
+            'chef_equipe' => ['manage_team', 'validate_reports', 'create_projects'],
+            'technicien' => ['create_reports', 'manage_tasks'],
+            default => []
+        };
 
         $user = User::create([
             'nom' => $request->nom,
             'prenom' => $request->prenom,
             'email' => $request->email,
-            'telephone' => $request->telephone,
-            'role' => $request->role,
-            'statut' => $request->statut,
             'password' => Hash::make($request->password),
+            'role' => $request->role,
+            'telephone' => $request->telephone,
+            'specialite' => $request->specialite,
+            'statut' => $request->statut,
+            'permissions' => $permissions,
         ]);
 
-        // Log de l'action
-        $this->logAction('CREATION', "Création de l'utilisateur: {$user->nom} {$user->prenom} ({$user->email})");
-
-        return redirect()->route('users.index')
-                        ->with('success', 'Utilisateur créé avec succès.');
+        return redirect()->route('users.show', $user)
+            ->with('success', 'Utilisateur créé avec succès.');
     }
 
     /**
-     * Afficher les détails d'un utilisateur
+     * Display the specified resource.
      */
     public function show(User $user)
     {
         $this->authorize('view', $user);
 
+        $user->load(['tasks' => function($query) {
+            $query->orderBy('created_at', 'desc')->limit(10);
+        }, 'reports' => function($query) {
+            $query->orderBy('created_at', 'desc')->limit(5);
+        }, 'events' => function($query) {
+            $query->orderBy('date_debut', 'desc')->limit(5);
+        }]);
+
         // Statistiques de l'utilisateur
         $stats = [
-            'total_tasks' => $user->assignedTasks()->count(),
-            'completed_tasks' => $user->assignedTasks()->where('statut', 'termine')->count(),
-            'in_progress_tasks' => $user->assignedTasks()->where('statut', 'en_cours')->count(),
-            'pending_tasks' => $user->assignedTasks()->where('statut', 'a_faire')->count(),
-            'overdue_tasks' => $user->assignedTasks()
-                                   ->where('date_echeance', '<', Carbon::today())
-                                   ->whereIn('statut', ['a_faire', 'en_cours'])
-                                   ->count(),
+            'total_tasks' => $user->tasks()->count(),
+            'completed_tasks' => $user->getCompletedTasksCount(),
+            'overdue_tasks' => $user->getOverdueTasksCount(),
+            'completion_rate' => $user->tasks()->count() > 0 ?
+                round(($user->getCompletedTasksCount() / $user->tasks()->count()) * 100) : 0,
             'total_reports' => $user->reports()->count(),
-            'managed_projects' => $user->managedProjects()->count(),
-            'active_projects' => $user->managedProjects()->where('statut', 'en_cours')->count(),
+            'validated_reports' => $user->reports()->where('statut', 'valide')->count(),
+            'total_events' => $user->events()->count(),
+            'completed_events' => $user->events()->where('statut', 'termine')->count(),
         ];
 
-        // Tâches récentes
-        $recent_tasks = $user->assignedTasks()
-                           ->with('project')
-                           ->orderBy('date_modification', 'desc')
-                           ->limit(10)
-                           ->get();
-
-        // Rapports récents
-        $recent_reports = $user->reports()
-                             ->orderBy('date_creation', 'desc')
-                             ->limit(5)
-                             ->get();
-
-        // Projets gérés
-        $managed_projects = $user->managedProjects()
-                                ->withCount(['tasks', 'completedTasks'])
-                                ->orderBy('date_creation', 'desc')
-                                ->get();
-
-        // Activité récente (dernières connexions)
-        $recent_activity = \App\Models\Journal::where('utilisateur_id', $user->id)
-                                            ->orderBy('date', 'desc')
-                                            ->limit(20)
-                                            ->get();
-
-        // Performance mensuelle (tâches terminées par mois)
-        $monthly_performance = collect();
-        for ($i = 11; $i >= 0; $i--) {
-            $date = Carbon::now()->subMonths($i);
-            $completed = $user->assignedTasks()
-                             ->where('statut', 'termine')
-                             ->whereYear('date_modification', $date->year)
-                             ->whereMonth('date_modification', $date->month)
-                             ->count();
-
-            $monthly_performance->push([
-                'month' => $date->format('M Y'),
-                'completed_tasks' => $completed
-            ]);
-        }
-
-        return view('users.show', compact(
-            'user',
-            'stats',
-            'recent_tasks',
-            'recent_reports',
-            'managed_projects',
-            'recent_activity',
-            'monthly_performance'
-        ));
+        return view('users.show', compact('user', 'stats'));
     }
 
     /**
-     * Afficher le formulaire d'édition
+     * Show the form for editing the specified resource.
      */
     public function edit(User $user)
     {
@@ -194,306 +163,308 @@ class UserController extends Controller
     }
 
     /**
-     * Mettre à jour un utilisateur
+     * Update the specified resource in storage.
      */
     public function update(Request $request, User $user)
     {
         $this->authorize('update', $user);
 
-        $validator = Validator::make($request->all(), [
-            'nom' => 'required|string|max:50',
-            'prenom' => 'required|string|max:50',
-            'email' => 'required|email|max:100|unique:users,email,' . $user->id,
+        $request->validate([
+            'nom' => 'required|string|max:255',
+            'prenom' => 'required|string|max:255',
+            'email' => ['required', 'string', 'email', 'max:255', Rule::unique('users')->ignore($user->id)],
+            'role' => 'required|in:admin,technicien,chef_equipe',
             'telephone' => 'nullable|string|max:20',
-            'role' => 'required|in:admin,technicien',
-            'statut' => 'required|in:actif,inactif',
-            'password' => 'nullable|min:6|confirmed',
-        ], [
-            'nom.required' => 'Le nom est obligatoire.',
-            'prenom.required' => 'Le prénom est obligatoire.',
-            'email.required' => 'L\'email est obligatoire.',
-            'email.unique' => 'Cet email est déjà utilisé.',
-            'role.required' => 'Le rôle est obligatoire.',
-            'password.min' => 'Le mot de passe doit contenir au moins 6 caractères.',
-            'password.confirmed' => 'La confirmation du mot de passe ne correspond pas.',
+            'specialite' => 'nullable|string|max:255',
+            'statut' => 'required|in:actif,inactif,suspendu',
         ]);
 
-        if ($validator->fails()) {
-            return back()->withErrors($validator)->withInput();
+        // Mettre à jour les permissions si le rôle change
+        $permissions = $user->permissions;
+        if ($request->role !== $user->role) {
+            $permissions = match($request->role) {
+                'admin' => ['all'],
+                'chef_equipe' => ['manage_team', 'validate_reports', 'create_projects'],
+                'technicien' => ['create_reports', 'manage_tasks'],
+                default => []
+            };
         }
 
-        $oldRole = $user->role;
-        $oldStatus = $user->statut;
-
-        $updateData = [
+        $user->update([
             'nom' => $request->nom,
             'prenom' => $request->prenom,
             'email' => $request->email,
-            'telephone' => $request->telephone,
             'role' => $request->role,
+            'telephone' => $request->telephone,
+            'specialite' => $request->specialite,
             'statut' => $request->statut,
-        ];
-
-        // Mettre à jour le mot de passe si fourni
-        if ($request->filled('password')) {
-            $updateData['password'] = Hash::make($request->password);
-        }
-
-        $user->update($updateData);
-
-        // Log des changements importants
-        $changes = [];
-        if ($oldRole !== $request->role) {
-            $changes[] = "rôle: {$oldRole} → {$request->role}";
-        }
-        if ($oldStatus !== $request->statut) {
-            $changes[] = "statut: {$oldStatus} → {$request->statut}";
-        }
-        if ($request->filled('password')) {
-            $changes[] = "mot de passe modifié";
-        }
-
-        if (!empty($changes)) {
-            $this->logAction('MODIFICATION', "Modification utilisateur {$user->nom} {$user->prenom}: " . implode(', ', $changes));
-        }
+            'permissions' => $permissions,
+        ]);
 
         return redirect()->route('users.show', $user)
-                        ->with('success', 'Utilisateur mis à jour avec succès.');
+            ->with('success', 'Utilisateur mis à jour avec succès.');
     }
 
     /**
-     * Supprimer un utilisateur
+     * Remove the specified resource from storage.
      */
     public function destroy(User $user)
     {
         $this->authorize('delete', $user);
 
-        // Vérifier si l'utilisateur a des tâches ou projets assignés
-        if ($user->assignedTasks()->count() > 0) {
-            return back()->with('error',
-                'Impossible de supprimer cet utilisateur car il a des tâches assignées. Veuillez d\'abord les réassigner.');
+        // Vérifier que ce n'est pas le dernier admin
+        if ($user->role === 'admin' && User::where('role', 'admin')->count() <= 1) {
+            return back()->with('error', 'Impossible de supprimer le dernier administrateur.');
         }
 
-        if ($user->managedProjects()->count() > 0) {
-            return back()->with('error',
-                'Impossible de supprimer cet utilisateur car il gère des projets. Veuillez d\'abord réassigner la responsabilité des projets.');
+        // Vérifier qu'il n'y a pas de données liées
+        if ($user->tasks()->count() > 0 || $user->reports()->count() > 0 || $user->events()->count() > 0) {
+            return back()->with('error', 'Impossible de supprimer cet utilisateur car il a des tâches, rapports ou événements associés.');
         }
 
-        $userName = $user->nom . ' ' . $user->prenom;
         $user->delete();
 
-        $this->logAction('SUPPRESSION', "Suppression de l'utilisateur: {$userName}");
-
         return redirect()->route('users.index')
-                        ->with('success', 'Utilisateur supprimé avec succès.');
+            ->with('success', 'Utilisateur supprimé avec succès.');
     }
 
     /**
-     * Désactiver/Activer un utilisateur
+     * Toggle user status
      */
     public function toggleStatus(User $user)
     {
         $this->authorize('update', $user);
 
         $newStatus = $user->statut === 'actif' ? 'inactif' : 'actif';
-        $user->statut = $newStatus;
-        $user->save();
+        $user->update(['statut' => $newStatus]);
 
-        $statusText = $newStatus === 'actif' ? 'activé' : 'désactivé';
+        $message = $newStatus === 'actif' ? 'Utilisateur activé avec succès.' : 'Utilisateur désactivé avec succès.';
 
-        $this->logAction('MODIFICATION', "Utilisateur {$user->nom} {$user->prenom} {$statusText}");
-
-        return response()->json([
-            'success' => true,
-            'message' => "Utilisateur {$statusText} avec succès",
-            'status' => $newStatus
-        ]);
+        return back()->with('success', $message);
     }
 
     /**
-     * Réinitialiser le mot de passe d'un utilisateur
+     * Reset user password
      */
     public function resetPassword(User $user)
     {
         $this->authorize('update', $user);
 
-        // Générer un mot de passe temporaire
-        $temporaryPassword = $this->generateTemporaryPassword();
+        $newPassword = Str::random(8);
+        $user->update(['password' => Hash::make($newPassword)]);
 
-        $user->password = Hash::make($temporaryPassword);
-        $user->save();
+        return back()->with('success', "Mot de passe réinitialisé. Nouveau mot de passe : {$newPassword}");
+    }
 
-        $this->logAction('MODIFICATION', "Réinitialisation du mot de passe pour: {$user->nom} {$user->prenom}");
+    /**
+     * Search users via AJAX
+     */
+    public function search(Request $request)
+    {
+        $this->authorize('viewAny', User::class);
+
+        $request->validate([
+            'q' => 'required|string|min:2',
+        ]);
+
+        $users = User::where('nom', 'like', '%' . $request->q . '%')
+            ->orWhere('prenom', 'like', '%' . $request->q . '%')
+            ->orWhere('email', 'like', '%' . $request->q . '%')
+            ->limit(10)
+            ->get();
 
         return response()->json([
             'success' => true,
-            'message' => 'Mot de passe réinitialisé avec succès',
-            'temporary_password' => $temporaryPassword
+            'users' => $users->map(function ($user) {
+                return [
+                    'id' => $user->id,
+                    'nom' => $user->nom,
+                    'prenom' => $user->prenom,
+                    'email' => $user->email,
+                    'role' => $user->role,
+                    'statut' => $user->statut,
+                    'initials' => $user->initials,
+                    'full_name' => $user->full_name,
+                    'url' => route('users.show', $user),
+                ];
+            })
         ]);
     }
 
     /**
-     * Statistiques des utilisateurs
+     * Get user activity
      */
-    public function statistics()
+    public function activity(User $user)
+    {
+        $this->authorize('view', $user);
+
+        $activities = [];
+
+        // Tâches récentes
+        $recentTasks = $user->tasks()
+            ->orderBy('updated_at', 'desc')
+            ->limit(10)
+            ->get();
+
+        foreach ($recentTasks as $task) {
+            $activities[] = [
+                'type' => 'task',
+                'action' => 'updated',
+                'title' => $task->titre,
+                'date' => $task->updated_at,
+                'url' => route('tasks.show', $task),
+                'status' => $task->statut,
+            ];
+        }
+
+        // Rapports récents
+        $recentReports = $user->reports()
+            ->orderBy('created_at', 'desc')
+            ->limit(10)
+            ->get();
+
+        foreach ($recentReports as $report) {
+            $activities[] = [
+                'type' => 'report',
+                'action' => 'created',
+                'title' => $report->titre,
+                'date' => $report->created_at,
+                'url' => route('reports.show', $report),
+                'status' => $report->statut,
+            ];
+        }
+
+        // Événements récents
+        $recentEvents = $user->events()
+            ->orderBy('date_debut', 'desc')
+            ->limit(10)
+            ->get();
+
+        foreach ($recentEvents as $event) {
+            $activities[] = [
+                'type' => 'event',
+                'action' => 'scheduled',
+                'title' => $event->titre,
+                'date' => $event->date_debut,
+                'url' => route('events.show', $event),
+                'status' => $event->statut,
+            ];
+        }
+
+        // Trier par date
+        usort($activities, function($a, $b) {
+            return $b['date'] <=> $a['date'];
+        });
+
+        return response()->json([
+            'success' => true,
+            'activities' => array_slice($activities, 0, 20) // Limiter à 20 activités
+        ]);
+    }
+
+    /**
+     * Get users statistics
+     */
+    public function stats()
     {
         $this->authorize('viewAny', User::class);
 
         $stats = [
-            'total_users' => User::count(),
-            'active_users' => User::where('statut', 'actif')->count(),
-            'inactive_users' => User::where('statut', 'inactif')->count(),
-            'admins' => User::where('role', 'admin')->count(),
-            'technicians' => User::where('role', 'technicien')->count(),
-            'users_with_tasks' => User::whereHas('assignedTasks')->count(),
-            'users_with_reports' => User::whereHas('reports')->count(),
+            'total' => User::count(),
+            'active' => User::where('statut', 'actif')->count(),
+            'inactive' => User::where('statut', 'inactif')->count(),
+            'suspended' => User::where('statut', 'suspendu')->count(),
+            'by_role' => User::selectRaw('role, COUNT(*) as count')
+                ->groupBy('role')
+                ->pluck('count', 'role'),
+            'recent_logins' => User::where('derniere_connexion', '>', now()->subDays(7))->count(),
+            'never_logged' => User::whereNull('derniere_connexion')->count(),
         ];
 
-        // Utilisateurs les plus actifs (par nombre de tâches terminées)
-        $most_active_users = User::withCount([
-                                    'assignedTasks as completed_tasks_count' => function($q) {
-                                        $q->where('statut', 'termine');
-                                    }
-                                ])
-                                ->where('statut', 'actif')
-                                ->where('role', 'technicien')
-                                ->orderBy('completed_tasks_count', 'desc')
-                                ->limit(10)
-                                ->get();
+        return response()->json([
+            'success' => true,
+            'stats' => $stats
+        ]);
+    }
 
-        // Utilisateurs par nombre de rapports
-        $users_by_reports = User::withCount('reports')
-                               ->where('statut', 'actif')
-                               ->where('role', 'technicien')
-                               ->orderBy('reports_count', 'desc')
-                               ->limit(10)
-                               ->get();
+    /**
+     * Bulk actions on users
+     */
+    public function bulkAction(Request $request)
+    {
+        $this->authorize('viewAny', User::class);
 
-        // Nouvelles inscriptions par mois (12 derniers mois)
-        $registrations_by_month = collect();
-        for ($i = 11; $i >= 0; $i--) {
-            $date = Carbon::now()->subMonths($i);
-            $count = User::whereYear('date_creation', $date->year)
-                        ->whereMonth('date_creation', $date->month)
-                        ->count();
+        $request->validate([
+            'action' => 'required|in:activate,deactivate,suspend,delete',
+            'user_ids' => 'required|array',
+            'user_ids.*' => 'exists:users,id',
+        ]);
 
-            $registrations_by_month->push([
-                'month' => $date->format('M Y'),
-                'count' => $count
-            ]);
+        $users = User::whereIn('id', $request->user_ids)->get();
+        $count = 0;
+
+        foreach ($users as $user) {
+            // Vérifications de sécurité
+            if ($user->id === Auth::id()) {
+                continue; // Ne pas modifier son propre compte
+            }
+
+            if ($request->action === 'delete' && $user->role === 'admin' && User::where('role', 'admin')->count() <= 1) {
+                continue; // Ne pas supprimer le dernier admin
+            }
+
+            switch ($request->action) {
+                case 'activate':
+                    $user->update(['statut' => 'actif']);
+                    $count++;
+                    break;
+                case 'deactivate':
+                    $user->update(['statut' => 'inactif']);
+                    $count++;
+                    break;
+                case 'suspend':
+                    $user->update(['statut' => 'suspendu']);
+                    $count++;
+                    break;
+                case 'delete':
+                    if ($user->tasks()->count() === 0 && $user->reports()->count() === 0) {
+                        $user->delete();
+                        $count++;
+                    }
+                    break;
+            }
         }
 
-        // Dernières connexions
-        $recent_logins = \App\Models\Journal::where('type_action', 'CONNEXION')
-                                          ->with('user')
-                                          ->orderBy('date', 'desc')
-                                          ->limit(20)
-                                          ->get();
+        $actionLabel = match($request->action) {
+            'activate' => 'activés',
+            'deactivate' => 'désactivés',
+            'suspend' => 'suspendus',
+            'delete' => 'supprimés',
+        };
 
-        return view('users.statistics', compact(
-            'stats',
-            'most_active_users',
-            'users_by_reports',
-            'registrations_by_month',
-            'recent_logins'
-        ));
+        return back()->with('success', "{$count} utilisateur(s) {$actionLabel} avec succès.");
     }
 
     /**
-     * API pour obtenir la liste des utilisateurs actifs
+     * Export users list
      */
-    public function getActiveUsers()
+    public function export(Request $request)
     {
-        $users = User::where('statut', 'actif')
-                    ->select('id', 'nom', 'prenom', 'email', 'role')
-                    ->orderBy('nom')
-                    ->get();
+        $this->authorize('viewAny', User::class);
 
-        return response()->json($users);
-    }
+        $query = User::withCount(['tasks', 'reports', 'events']);
 
-    /**
-     * API pour obtenir les statistiques d'un utilisateur
-     */
-    public function getUserStats(User $user)
-    {
-        $this->authorize('view', $user);
-
-        $stats = [
-            'user_id' => $user->id,
-            'total_tasks' => $user->assignedTasks()->count(),
-            'completed_tasks' => $user->assignedTasks()->where('statut', 'termine')->count(),
-            'in_progress_tasks' => $user->assignedTasks()->where('statut', 'en_cours')->count(),
-            'overdue_tasks' => $user->assignedTasks()
-                                   ->where('date_echeance', '<', Carbon::today())
-                                   ->whereIn('statut', ['a_faire', 'en_cours'])
-                                   ->count(),
-            'total_reports' => $user->reports()->count(),
-            'reports_this_month' => $user->reports()
-                                        ->whereMonth('date_creation', Carbon::now()->month)
-                                        ->count(),
-        ];
-
-        return response()->json($stats);
-    }
-
-    /**
-     * Recherche d'utilisateurs
-     */
-    public function search(Request $request)
-    {
-        $query = User::query();
-
-        if ($request->filled('q')) {
-            $search = $request->q;
-            $query->where(function($q) use ($search) {
-                $q->where('nom', 'like', "%{$search}%")
-                  ->orWhere('prenom', 'like', "%{$search}%")
-                  ->orWhere('email', 'like', "%{$search}%");
-            });
-        }
-
+        // Appliquer les mêmes filtres que l'index
         if ($request->filled('role')) {
             $query->where('role', $request->role);
         }
 
-        if ($request->filled('statut')) {
-            $query->where('statut', $request->statut);
+        if ($request->filled('status')) {
+            $query->where('statut', $request->status);
         }
 
-        $users = $query->orderBy('nom')
-                      ->limit(20)
-                      ->get();
+        $users = $query->orderBy('nom')->get();
 
-        return response()->json($users);
-    }
-
-    /**
-     * Générer un mot de passe temporaire
-     */
-    private function generateTemporaryPassword()
-    {
-        $characters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        $password = '';
-
-        for ($i = 0; $i < 8; $i++) {
-            $password .= $characters[rand(0, strlen($characters) - 1)];
-        }
-
-        return $password;
-    }
-
-    /**
-     * Log des actions
-     */
-    private function logAction($type, $description)
-    {
-        \App\Models\Journal::create([
-            'date' => now(),
-            'type_action' => $type,
-            'description' => $description,
-            'utilisateur_id' => Auth::id(),
-            'adresse_ip' => request()->ip(),
-        ]);
+        return view('users.export', compact('users'));
     }
 }

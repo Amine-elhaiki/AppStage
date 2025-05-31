@@ -3,128 +3,64 @@
 @section('title', 'Gestion des projets - PlanifTech ORMVAT')
 
 @section('content')
-<div class="container-fluid py-4">
+<div class="container-fluid">
     <!-- En-tête -->
-    <div class="row mb-4">
-        <div class="col-12">
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <h1 class="h3 mb-0 text-dark">
-                        <i class="fas fa-project-diagram me-2 text-primary"></i>
-                        Gestion des projets
-                    </h1>
-                    <p class="text-muted mb-0">
-                        Suivez et organisez les projets hydrauliques et agricoles de l'ORMVAT
-                    </p>
-                </div>
-                <div>
-                    @if(Auth::user()->role === 'admin')
-                        <a href="{{ route('projects.create') }}" class="btn btn-primary">
-                            <i class="fas fa-plus me-2"></i>
-                            Nouveau projet
-                        </a>
-                    @endif
-                </div>
-            </div>
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="h3 mb-0">
+                <i class="fas fa-project-diagram text-success me-2"></i>
+                {{ Auth::user()->isAdmin() ? 'Gestion des projets' : 'Mes projets' }}
+            </h1>
+            <p class="text-muted mb-0">
+                {{ Auth::user()->isAdmin() ? 'Vue d\'ensemble de tous les projets ORMVAT' : 'Projets auxquels vous participez' }}
+            </p>
         </div>
-    </div>
-
-    <!-- Statistiques rapides -->
-    <div class="row mb-4">
-        <div class="col-lg-3 col-md-6 mb-3">
-            <div class="card border-0 shadow-sm bg-primary text-white">
-                <div class="card-body">
-                    <div class="d-flex align-items-center">
-                        <div class="flex-shrink-0">
-                            <i class="fas fa-project-diagram fa-2x opacity-75"></i>
-                        </div>
-                        <div class="ms-3">
-                            <h4 class="mb-0 fw-bold">{{ $stats['total_projects'] ?? 0 }}</h4>
-                            <p class="mb-0 opacity-75">Projets actifs</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-lg-3 col-md-6 mb-3">
-            <div class="card border-0 shadow-sm bg-success text-white">
-                <div class="card-body">
-                    <div class="d-flex align-items-center">
-                        <div class="flex-shrink-0">
-                            <i class="fas fa-check-circle fa-2x opacity-75"></i>
-                        </div>
-                        <div class="ms-3">
-                            <h4 class="mb-0 fw-bold">{{ $stats['completed_projects'] ?? 0 }}</h4>
-                            <p class="mb-0 opacity-75">Projets terminés</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-lg-3 col-md-6 mb-3">
-            <div class="card border-0 shadow-sm bg-warning text-white">
-                <div class="card-body">
-                    <div class="d-flex align-items-center">
-                        <div class="flex-shrink-0">
-                            <i class="fas fa-exclamation-triangle fa-2x opacity-75"></i>
-                        </div>
-                        <div class="ms-3">
-                            <h4 class="mb-0 fw-bold">{{ $stats['delayed_projects'] ?? 0 }}</h4>
-                            <p class="mb-0 opacity-75">En retard</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-lg-3 col-md-6 mb-3">
-            <div class="card border-0 shadow-sm bg-info text-white">
-                <div class="card-body">
-                    <div class="d-flex align-items-center">
-                        <div class="flex-shrink-0">
-                            <i class="fas fa-chart-line fa-2x opacity-75"></i>
-                        </div>
-                        <div class="ms-3">
-                            <h4 class="mb-0 fw-bold">{{ $stats['avg_completion'] ?? 0 }}%</h4>
-                            <p class="mb-0 opacity-75">Avancement moyen</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        @can('create', App\Models\Project::class)
+            <a href="{{ route('projects.create') }}" class="btn btn-success">
+                <i class="fas fa-plus me-2"></i>
+                Nouveau projet
+            </a>
+        @endcan
     </div>
 
     <!-- Filtres -->
-    <div class="card border-0 shadow-sm mb-4">
+    <div class="card mb-4">
         <div class="card-body">
             <form method="GET" action="{{ route('projects.index') }}" class="row g-3">
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <label for="search" class="form-label">Recherche</label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fas fa-search"></i></span>
-                        <input type="text" class="form-control" id="search" name="search"
-                               value="{{ request('search') }}" placeholder="Nom, description, zone...">
-                    </div>
+                    <input type="text" class="form-control" id="search" name="search"
+                           value="{{ request('search') }}" placeholder="Nom, description, zone...">
                 </div>
 
                 <div class="col-md-2">
-                    <label for="statut" class="form-label">Statut</label>
-                    <select class="form-select" id="statut" name="statut">
+                    <label for="status" class="form-label">Statut</label>
+                    <select class="form-select" id="status" name="status">
                         <option value="">Tous les statuts</option>
-                        <option value="planifie" {{ request('statut') === 'planifie' ? 'selected' : '' }}>Planifié</option>
-                        <option value="en_cours" {{ request('statut') === 'en_cours' ? 'selected' : '' }}>En cours</option>
-                        <option value="termine" {{ request('statut') === 'termine' ? 'selected' : '' }}>Terminé</option>
-                        <option value="suspendu" {{ request('statut') === 'suspendu' ? 'selected' : '' }}>Suspendu</option>
+                        <option value="planifie" {{ request('status') === 'planifie' ? 'selected' : '' }}>Planifié</option>
+                        <option value="en_cours" {{ request('status') === 'en_cours' ? 'selected' : '' }}>En cours</option>
+                        <option value="suspendu" {{ request('status') === 'suspendu' ? 'selected' : '' }}>Suspendu</option>
+                        <option value="termine" {{ request('status') === 'termine' ? 'selected' : '' }}>Terminé</option>
+                        <option value="annule" {{ request('status') === 'annule' ? 'selected' : '' }}>Annulé</option>
                     </select>
                 </div>
 
-                <div class="col-md-3">
-                    <label for="zone" class="form-label">Zone géographique</label>
+                <div class="col-md-2">
+                    <label for="priority" class="form-label">Priorité</label>
+                    <select class="form-select" id="priority" name="priority">
+                        <option value="">Toutes les priorités</option>
+                        <option value="urgente" {{ request('priority') === 'urgente' ? 'selected' : '' }}>Urgente</option>
+                        <option value="haute" {{ request('priority') === 'haute' ? 'selected' : '' }}>Haute</option>
+                        <option value="normale" {{ request('priority') === 'normale' ? 'selected' : '' }}>Normale</option>
+                        <option value="basse" {{ request('priority') === 'basse' ? 'selected' : '' }}>Basse</option>
+                    </select>
+                </div>
+
+                <div class="col-md-2">
+                    <label for="zone" class="form-label">Zone</label>
                     <select class="form-select" id="zone" name="zone">
                         <option value="">Toutes les zones</option>
-                        @foreach($zones ?? [] as $zone)
+                        @foreach($zones as $zone)
                             <option value="{{ $zone }}" {{ request('zone') === $zone ? 'selected' : '' }}>
                                 {{ $zone }}
                             </option>
@@ -132,144 +68,204 @@
                     </select>
                 </div>
 
-                @if(Auth::user()->role === 'admin')
-                <div class="col-md-2">
-                    <label for="responsable" class="form-label">Responsable</label>
-                    <select class="form-select" id="responsable" name="responsable">
-                        <option value="">Tous les responsables</option>
-                        @foreach($responsables ?? [] as $responsable)
-                            <option value="{{ $responsable->id }}" {{ request('responsable') == $responsable->id ? 'selected' : '' }}>
-                                {{ $responsable->prenom }} {{ $responsable->nom }}
-                            </option>
-                        @endforeach
-                    </select>
-                </div>
+                @if(Auth::user()->isAdmin() && $responsables->count() > 0)
+                    <div class="col-md-2">
+                        <label for="responsable" class="form-label">Responsable</label>
+                        <select class="form-select" id="responsable" name="responsable">
+                            <option value="">Tous les responsables</option>
+                            @foreach($responsables as $responsable)
+                                <option value="{{ $responsable->id }}" {{ request('responsable') == $responsable->id ? 'selected' : '' }}>
+                                    {{ $responsable->prenom }} {{ $responsable->nom }}
+                                </option>
+                            @endforeach
+                        </select>
+                    </div>
                 @endif
 
-                <div class="col-12">
-                    <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-search me-2"></i>Filtrer
-                    </button>
-                    <a href="{{ route('projects.index') }}" class="btn btn-outline-secondary">
-                        <i class="fas fa-times me-2"></i>Réinitialiser
-                    </a>
-                    <div class="float-end">
-                        <div class="btn-group" role="group">
-                            <button type="button" class="btn btn-outline-primary" onclick="exportProjects('excel')">
-                                <i class="fas fa-file-excel me-1"></i>Excel
-                            </button>
-                            <button type="button" class="btn btn-outline-primary" onclick="exportProjects('pdf')">
-                                <i class="fas fa-file-pdf me-1"></i>PDF
-                            </button>
-                        </div>
+                <div class="col-md-1">
+                    <label class="form-label">&nbsp;</label>
+                    <div>
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="fas fa-search"></i>
+                        </button>
                     </div>
                 </div>
             </form>
         </div>
     </div>
 
+    <!-- Statistiques rapides -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card border-success">
+                <div class="card-body text-center">
+                    <i class="fas fa-project-diagram fa-2x text-success mb-2"></i>
+                    <h4 class="mb-0">{{ $projects->total() }}</h4>
+                    <small class="text-muted">Total projets</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card border-primary">
+                <div class="card-body text-center">
+                    <i class="fas fa-play fa-2x text-primary mb-2"></i>
+                    <h4 class="mb-0">{{ $projects->where('statut', 'en_cours')->count() }}</h4>
+                    <small class="text-muted">En cours</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card border-info">
+                <div class="card-body text-center">
+                    <i class="fas fa-check-circle fa-2x text-info mb-2"></i>
+                    <h4 class="mb-0">{{ $projects->where('statut', 'termine')->count() }}</h4>
+                    <small class="text-muted">Terminés</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card border-warning">
+                <div class="card-body text-center">
+                    <i class="fas fa-pause fa-2x text-warning mb-2"></i>
+                    <h4 class="mb-0">{{ $projects->where('statut', 'suspendu')->count() }}</h4>
+                    <small class="text-muted">Suspendus</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Liste des projets -->
     <div class="row">
-        @forelse($projects ?? [] as $project)
-            <div class="col-lg-6 col-xl-4 mb-4">
-                <div class="card border-0 shadow-sm h-100">
-                    <!-- En-tête de la carte -->
-                    <div class="card-header bg-white border-bottom-0 py-3">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <span class="badge bg-{{ $project->statut === 'termine' ? 'success' : ($project->statut === 'en_cours' ? 'primary' : ($project->statut === 'suspendu' ? 'danger' : 'secondary')) }}">
-                                {{ ucfirst(str_replace('_', ' ', $project->statut)) }}
+        @forelse($projects as $project)
+            <div class="col-lg-4 col-md-6 mb-4">
+                <div class="card h-100 project-card" data-project-id="{{ $project->id }}">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <div>
+                            <span class="badge bg-{{ $project->status_color }}">
+                                {{ $project->status_label }}
                             </span>
-                            <div class="dropdown">
-                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown">
-                                    <i class="fas fa-ellipsis-v"></i>
-                                </button>
-                                <ul class="dropdown-menu">
-                                    <li><a class="dropdown-item" href="{{ route('projects.show', $project->id) }}">
-                                        <i class="fas fa-eye me-2"></i>Voir détails
+                            <span class="badge bg-{{ $project->priority_color }} ms-1">
+                                {{ ucfirst($project->priorite) }}
+                            </span>
+                        </div>
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                <i class="fas fa-ellipsis-v"></i>
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="{{ route('projects.show', $project) }}">
+                                    <i class="fas fa-eye me-2"></i>Voir détails
+                                </a></li>
+                                @can('update', $project)
+                                    <li><a class="dropdown-item" href="{{ route('projects.edit', $project) }}">
+                                        <i class="fas fa-edit me-2"></i>Modifier
                                     </a></li>
-                                    @if(Auth::user()->role === 'admin')
-                                        <li><a class="dropdown-item" href="{{ route('projects.edit', $project->id) }}">
-                                            <i class="fas fa-edit me-2"></i>Modifier
-                                        </a></li>
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item text-danger" href="#" onclick="deleteProject({{ $project->id }})">
-                                            <i class="fas fa-trash me-2"></i>Supprimer
-                                        </a></li>
-                                    @endif
-                                </ul>
-                            </div>
+                                @endcan
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item" href="{{ route('projects.tasks', $project) }}">
+                                    <i class="fas fa-tasks me-2"></i>Voir tâches ({{ $project->tasks_count }})
+                                </a></li>
+                                @can('delete', $project)
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item text-danger" href="#"
+                                           onclick="confirmDelete({{ $project->id }}, '{{ $project->nom }}')">
+                                        <i class="fas fa-trash me-2"></i>Supprimer
+                                    </a></li>
+                                @endcan
+                            </ul>
                         </div>
                     </div>
 
-                    <!-- Contenu de la carte -->
                     <div class="card-body">
-                        <h5 class="card-title mb-2">{{ $project->nom }}</h5>
-                        <p class="card-text text-muted mb-3">{{ Str::limit($project->description, 100) }}</p>
+                        <h5 class="card-title">
+                            <a href="{{ route('projects.show', $project) }}" class="text-decoration-none">
+                                {{ $project->nom }}
+                            </a>
+                        </h5>
+                        <p class="card-text text-muted">
+                            {{ Str::limit($project->description, 100) }}
+                        </p>
 
-                        <!-- Informations clés -->
                         <div class="mb-3">
-                            <div class="d-flex align-items-center mb-2">
-                                <i class="fas fa-map-marker-alt text-muted me-2"></i>
-                                <small class="text-muted">{{ $project->zone_geographique }}</small>
-                            </div>
-                            <div class="d-flex align-items-center mb-2">
-                                <i class="fas fa-user text-muted me-2"></i>
-                                <small class="text-muted">{{ $project->responsable->prenom ?? '' }} {{ $project->responsable->nom ?? '' }}</small>
-                            </div>
-                            @if($project->date_fin)
-                                <div class="d-flex align-items-center">
-                                    <i class="fas fa-calendar text-muted me-2"></i>
-                                    <small class="text-muted">
-                                        Échéance: {{ Carbon\Carbon::parse($project->date_fin)->format('d/m/Y') }}
-                                        @if(Carbon\Carbon::parse($project->date_fin)->isPast() && $project->statut !== 'termine')
-                                            <span class="text-danger ms-1">(En retard)</span>
-                                        @endif
-                                    </small>
-                                </div>
-                            @endif
+                            <small class="text-muted">
+                                <i class="fas fa-map-marker-alt me-1"></i>
+                                {{ $project->zone_geographique }}
+                            </small>
                         </div>
 
-                        <!-- Barre de progression -->
                         <div class="mb-3">
                             <div class="d-flex justify-content-between align-items-center mb-1">
-                                <small class="text-muted">Avancement</small>
-                                <small class="fw-bold text-{{ $project->pourcentage_avancement >= 75 ? 'success' : ($project->pourcentage_avancement >= 50 ? 'warning' : 'danger') }}">
-                                    {{ $project->pourcentage_avancement ?? 0 }}%
-                                </small>
+                                <span class="small fw-semibold">Progression</span>
+                                <span class="small">{{ $project->pourcentage_avancement }}%</span>
                             </div>
                             <div class="progress" style="height: 8px;">
-                                <div class="progress-bar bg-{{ $project->pourcentage_avancement >= 75 ? 'success' : ($project->pourcentage_avancement >= 50 ? 'warning' : 'danger') }}"
-                                     role="progressbar"
-                                     style="width: {{ $project->pourcentage_avancement ?? 0 }}%"></div>
+                                @php
+                                    $progress = $project->tasks_count > 0 ?
+                                        round(($project->completed_tasks_count / $project->tasks_count) * 100) :
+                                        $project->pourcentage_avancement;
+                                @endphp
+                                <div class="progress-bar bg-{{ $project->status_color }}"
+                                     style="width: {{ $progress }}%"></div>
                             </div>
+                            <small class="text-muted">
+                                {{ $project->completed_tasks_count }}/{{ $project->tasks_count }} tâches terminées
+                            </small>
                         </div>
 
-                        <!-- Statistiques du projet -->
-                        <div class="row text-center">
-                            <div class="col-4">
-                                <div class="small text-muted">Tâches</div>
-                                <div class="fw-bold text-primary">{{ $project->taches_count ?? 0 }}</div>
+                        @if($project->responsable)
+                            <div class="d-flex align-items-center mb-2">
+                                <div class="me-2">
+                                    <div class="bg-primary text-white rounded-circle d-inline-flex align-items-center justify-content-center"
+                                         style="width: 30px; height: 30px; font-size: 12px;">
+                                        {{ $project->responsable->initials }}
+                                    </div>
+                                </div>
+                                <div>
+                                    <small class="fw-semibold">{{ $project->responsable->prenom }} {{ $project->responsable->nom }}</small>
+                                    <br>
+                                    <small class="text-muted">Responsable</small>
+                                </div>
                             </div>
-                            <div class="col-4">
-                                <div class="small text-muted">Événements</div>
-                                <div class="fw-bold text-success">{{ $project->evenements_count ?? 0 }}</div>
+                        @endif
+
+                        @if($project->budget)
+                            <div class="mb-2">
+                                <small class="text-muted">
+                                    <i class="fas fa-dollar-sign me-1"></i>
+                                    Budget: {{ number_format($project->budget, 0, ',', ' ') }} MAD
+                                </small>
                             </div>
-                            <div class="col-4">
-                                <div class="small text-muted">Rapports</div>
-                                <div class="fw-bold text-info">{{ $project->rapports_count ?? 0 }}</div>
-                            </div>
-                        </div>
+                        @endif
                     </div>
 
-                    <!-- Pied de carte -->
-                    <div class="card-footer bg-white border-top-0">
+                    <div class="card-footer bg-transparent">
                         <div class="d-flex justify-content-between align-items-center">
                             <small class="text-muted">
-                                Créé {{ $project->created_at->diffForHumans() }}
+                                <i class="fas fa-calendar me-1"></i>
+                                @if($project->date_fin)
+                                    Échéance: {{ $project->date_fin->format('d/m/Y') }}
+                                    @if($project->isOverdue())
+                                        <span class="text-danger">(En retard)</span>
+                                    @endif
+                                @else
+                                    Pas d'échéance
+                                @endif
                             </small>
-                            <a href="{{ route('projects.show', $project->id) }}" class="btn btn-primary btn-sm">
-                                Voir détails <i class="fas fa-arrow-right ms-1"></i>
-                            </a>
+                            <div class="btn-group btn-group-sm">
+                                <a href="{{ route('projects.show', $project) }}"
+                                   class="btn btn-outline-primary btn-sm">
+                                    <i class="fas fa-eye"></i>
+                                </a>
+                                @can('update', $project)
+                                    @if($project->statut !== 'termine')
+                                        <button type="button" class="btn btn-outline-success btn-sm project-action"
+                                                data-action="termine" data-project-id="{{ $project->id }}"
+                                                title="Marquer comme terminé">
+                                            <i class="fas fa-check"></i>
+                                        </button>
+                                    @endif
+                                @endcan
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -278,19 +274,21 @@
             <div class="col-12">
                 <div class="text-center py-5">
                     <i class="fas fa-project-diagram fa-4x text-muted mb-3"></i>
-                    <h4 class="text-muted">Aucun projet trouvé</h4>
+                    <h5 class="text-muted">Aucun projet trouvé</h5>
                     <p class="text-muted">
-                        @if(request()->hasAny(['search', 'statut', 'zone', 'responsable']))
+                        @if(request()->hasAny(['search', 'status', 'priority', 'zone', 'responsable']))
                             Aucun projet ne correspond à vos critères de recherche.
-                            <br><a href="{{ route('projects.index') }}">Voir tous les projets</a>
                         @else
-                            Commencez par créer votre premier projet ORMVAT.
+                            Aucun projet n'est disponible pour le moment.
                         @endif
                     </p>
-                    @if(Auth::user()->role === 'admin')
-                        <a href="{{ route('projects.create') }}" class="btn btn-primary">
-                            <i class="fas fa-plus me-2"></i>Créer le premier projet
-                        </a>
+                    @if(!request()->hasAny(['search', 'status', 'priority', 'zone', 'responsable']))
+                        @can('create', App\Models\Project::class)
+                            <a href="{{ route('projects.create') }}" class="btn btn-success">
+                                <i class="fas fa-plus me-2"></i>
+                                Créer le premier projet
+                            </a>
+                        @endcan
                     @endif
                 </div>
             </div>
@@ -298,9 +296,9 @@
     </div>
 
     <!-- Pagination -->
-    @if(isset($projects) && $projects->hasPages())
+    @if($projects->hasPages())
         <div class="d-flex justify-content-center mt-4">
-            {{ $projects->appends(request()->query())->links() }}
+            {{ $projects->links() }}
         </div>
     @endif
 </div>
@@ -316,104 +314,161 @@
             <div class="modal-body">
                 <div class="alert alert-warning">
                     <i class="fas fa-exclamation-triangle me-2"></i>
-                    <strong>Attention !</strong> Cette action supprimera définitivement le projet ainsi que :
+                    <strong>Attention !</strong> Cette action supprimera également toutes les tâches, événements et rapports associés.
                 </div>
-                <ul class="mb-0">
-                    <li>Toutes les tâches associées</li>
-                    <li>Tous les événements liés</li>
-                    <li>Tous les rapports du projet</li>
-                    <li>L'historique complet</li>
-                </ul>
-                <p class="text-danger mt-3 mb-0">Cette action est <strong>irréversible</strong>.</p>
+                <p>Êtes-vous sûr de vouloir supprimer le projet "<span id="projectTitle"></span>" ?</p>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annuler</button>
-                <form id="deleteForm" method="POST" class="d-inline">
+                <form id="deleteForm" method="POST" style="display: inline;">
                     @csrf
                     @method('DELETE')
-                    <button type="submit" class="btn btn-danger">
-                        <i class="fas fa-trash me-2"></i>Supprimer définitivement
-                    </button>
+                    <button type="submit" class="btn btn-danger">Supprimer</button>
                 </form>
             </div>
         </div>
     </div>
 </div>
 
+<!-- Toast Container -->
+<div id="toast-container" class="position-fixed top-0 end-0 p-3" style="z-index: 9999;"></div>
+@endsection
+
 @push('scripts')
 <script>
-// Fonction de suppression
-function deleteProject(projectId) {
-    const deleteForm = document.getElementById('deleteForm');
-    deleteForm.action = `/projects/${projectId}`;
+// Actions sur les projets
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('project-action') || e.target.closest('.project-action')) {
+        e.preventDefault();
+        const target = e.target.classList.contains('project-action') ? e.target : e.target.closest('.project-action');
+        const projectId = parseInt(target.dataset.projectId);
+        const action = target.dataset.action;
 
-    const modal = new bootstrap.Modal(document.getElementById('deleteModal'));
-    modal.show();
-}
-
-// Export des projets
-function exportProjects(format) {
-    const currentUrl = new URL(window.location);
-    currentUrl.searchParams.set('export', format);
-
-    // Créer un lien de téléchargement temporaire
-    const link = document.createElement('a');
-    link.href = currentUrl.toString();
-    link.download = `projets_ormvat_${new Date().toISOString().split('T')[0]}.${format}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-}
-
-// Tri des projets
-function sortProjects(field, direction = 'asc') {
-    const currentUrl = new URL(window.location);
-    currentUrl.searchParams.set('sort', field);
-    currentUrl.searchParams.set('direction', direction);
-    window.location.href = currentUrl.toString();
-}
-
-// Recherche en temps réel
-let searchTimeout;
-document.getElementById('search').addEventListener('input', function() {
-    clearTimeout(searchTimeout);
-    const searchTerm = this.value;
-
-    if (searchTerm.length >= 3 || searchTerm.length === 0) {
-        searchTimeout = setTimeout(() => {
-            // Soumettre automatiquement le formulaire après 500ms d'inactivité
-            this.closest('form').submit();
-        }, 500);
+        if (projectId && action) {
+            updateProjectStatus(projectId, action);
+        }
     }
 });
 
-// Animation des cartes au survol
-document.querySelectorAll('.card').forEach(card => {
-    card.addEventListener('mouseenter', function() {
-        this.style.transform = 'translateY(-5px)';
-        this.style.transition = 'transform 0.2s ease-in-out';
+function updateProjectStatus(projectId, status) {
+    fetch(`/api/projects/${projectId}/status`, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify({ statut: status })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showToast(data.message || 'Statut mis à jour avec succès', 'success');
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showToast(data.message || 'Erreur lors de la mise à jour', 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('Erreur:', error);
+        showToast('Erreur de communication avec le serveur', 'danger');
     });
+}
 
-    card.addEventListener('mouseleave', function() {
-        this.style.transform = 'translateY(0)';
+function confirmDelete(projectId, projectTitle) {
+    document.getElementById('projectTitle').textContent = projectTitle;
+    document.getElementById('deleteForm').action = `/projects/${projectId}`;
+    new bootstrap.Modal(document.getElementById('deleteModal')).show();
+}
+
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const toastId = 'toast-' + Date.now();
+    const bgClass = type === 'success' ? 'bg-success' : type === 'danger' ? 'bg-danger' : 'bg-info';
+
+    const toastHtml = `
+        <div id="${toastId}" class="toast align-items-center text-white ${bgClass} border-0" role="alert">
+            <div class="d-flex">
+                <div class="toast-body">${message}</div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+            </div>
+        </div>
+    `;
+
+    container.insertAdjacentHTML('beforeend', toastHtml);
+
+    const toast = new bootstrap.Toast(document.getElementById(toastId), { autohide: true, delay: 4000 });
+    toast.show();
+
+    document.getElementById(toastId).addEventListener('hidden.bs.toast', function() {
+        this.remove();
+    });
+}
+
+// Auto-submit form on filter change
+document.querySelectorAll('#status, #priority, #zone, #responsable').forEach(select => {
+    select.addEventListener('change', function() {
+        this.form.submit();
     });
 });
 
-// Mise à jour en temps réel des statistiques (optionnel)
-function refreshStats() {
-    fetch('/api/projects/stats')
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Mettre à jour les statistiques sans recharger la page
-                console.log('Statistiques mises à jour');
-            }
-        })
-        .catch(error => console.log('Erreur refresh stats:', error));
+// Animation des cartes au survol
+document.querySelectorAll('.project-card').forEach(card => {
+    card.addEventListener('mouseenter', function() {
+        this.style.transform = 'translateY(-5px)';
+        this.style.transition = 'transform 0.2s ease';
+        this.style.boxShadow = '0 8px 25px rgba(0,0,0,0.15)';
+    });
+
+    card.addEventListener('mouseleave', function() {
+        this.style.transform = '';
+        this.style.boxShadow = '';
+    });
+});
+</script>
+@endpush
+
+@push('styles')
+<style>
+.project-card {
+    transition: all 0.2s ease;
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
 }
 
-// Actualiser les stats toutes les 5 minutes
-setInterval(refreshStats, 300000);
-</script>
+.project-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+}
+
+.progress {
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    border-radius: 10px;
+    transition: width 0.3s ease;
+}
+
+.badge {
+    font-size: 0.7em;
+    padding: 0.4em 0.6em;
+}
+
+.btn-group-sm .btn {
+    padding: 0.25rem 0.5rem;
+}
+
+.card-header {
+    border-radius: 12px 12px 0 0 !important;
+}
+
+.dropdown-menu {
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+</style>
 @endpush
 @endsection

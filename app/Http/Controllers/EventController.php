@@ -2,56 +2,50 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Event;
+use App\Models\Project;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Validator;
-use App\Models\Event;
-use App\Models\User;
-use App\Models\Project;
-use App\Models\Participation;
 use Carbon\Carbon;
 
 class EventController extends Controller
 {
     /**
-     * Afficher la liste des événements
+     * Display a listing of the resource.
      */
     public function index(Request $request)
     {
-        $user = Auth::user();
-        $query = Event::with('organisateur', 'project');
+        $query = Event::with(['user', 'project']);
 
         // Filtrage selon le rôle
-        if ($user->role === 'technicien') {
-            $query->where('id_organisateur', $user->id)
-                  ->orWhereHas('participants', function($q) use ($user) {
-                      $q->where('id_utilisateur', $user->id);
-                  });
+        if (!Auth::user()->isAdmin()) {
+            $query->where('user_id', Auth::id());
         }
 
-        // Filtres de recherche
+        // Filtres
         if ($request->filled('type')) {
             $query->where('type', $request->type);
         }
 
-        if ($request->filled('statut')) {
-            $query->where('statut', $request->statut);
+        if ($request->filled('status')) {
+            $query->where('statut', $request->status);
         }
 
-        if ($request->filled('organisateur') && $user->role === 'admin') {
-            $query->where('id_organisateur', $request->organisateur);
+        if ($request->filled('project')) {
+            $query->where('project_id', $request->project);
         }
 
-        if ($request->filled('projet')) {
-            $query->where('id_projet', $request->projet);
+        if ($request->filled('user') && Auth::user()->isAdmin()) {
+            $query->where('user_id', $request->user);
         }
 
-        if ($request->filled('date_debut')) {
-            $query->whereDate('date_debut', '>=', $request->date_debut);
+        if ($request->filled('date_from')) {
+            $query->whereDate('date_debut', '>=', $request->date_from);
         }
 
-        if ($request->filled('date_fin')) {
-            $query->whereDate('date_debut', '<=', $request->date_fin);
+        if ($request->filled('date_to')) {
+            $query->whereDate('date_debut', '<=', $request->date_to);
         }
 
         if ($request->filled('search')) {
@@ -63,410 +57,351 @@ class EventController extends Controller
             });
         }
 
-        // Tri par défaut : événements à venir d'abord
+        // Tri par date par défaut
         $sortBy = $request->get('sort', 'date_debut');
-        $sortOrder = $request->get('order', 'asc');
-        $query->orderBy($sortBy, $sortOrder);
+        $sortDirection = $request->get('direction', 'asc');
 
-        $events = $query->paginate(12);
+        if (in_array($sortBy, ['titre', 'type', 'statut', 'date_debut', 'lieu'])) {
+            $query->orderBy($sortBy, $sortDirection);
+        }
+
+        $events = $query->paginate(15)->withQueryString();
 
         // Données pour les filtres
-        $organisateurs = $user->role === 'admin' ? User::where('statut', 'actif')->get() : collect();
-        $projects = Project::where('statut', '!=', 'termine')->get();
+        $projects = Project::orderBy('nom')->get();
+        $users = Auth::user()->isAdmin() ? User::orderBy('prenom')->get() : collect();
 
-        return view('events.index', compact('events', 'organisateurs', 'projects'));
+        return view('events.index', compact('events', 'projects', 'users'));
     }
 
     /**
-     * Afficher le calendrier des événements
-     */
-    public function calendar(Request $request)
-    {
-        $user = Auth::user();
-
-        // Données pour les filtres
-        $users = $user->role === 'admin' ? User::where('statut', 'actif')->get() : collect();
-        $projects = Project::where('statut', '!=', 'termine')->get();
-
-        return view('events.calendar', compact('users', 'projects'));
-    }
-
-    /**
-     * API pour obtenir les événements du calendrier
-     */
-    public function getCalendarEvents(Request $request)
-    {
-        $user = Auth::user();
-        $query = Event::with('organisateur', 'project');
-
-        // Filtrage selon le rôle
-        if ($user->role === 'technicien') {
-            $query->where('id_organisateur', $user->id)
-                  ->orWhereHas('participants', function($q) use ($user) {
-                      $q->where('id_utilisateur', $user->id);
-                  });
-        }
-
-        // Filtres optionnels
-        if ($request->filled('type')) {
-            $query->where('type', $request->type);
-        }
-
-        if ($request->filled('organisateur') && $user->role === 'admin') {
-            $query->where('id_organisateur', $request->organisateur);
-        }
-
-        if ($request->filled('projet')) {
-            $query->where('id_projet', $request->projet);
-        }
-
-        // Période pour le calendrier
-        if ($request->filled('start') && $request->filled('end')) {
-            $query->whereBetween('date_debut', [
-                Carbon::parse($request->start)->startOfDay(),
-                Carbon::parse($request->end)->endOfDay()
-            ]);
-        }
-
-        $events = $query->get()->map(function($event) {
-            $color = $this->getEventColor($event->type, $event->statut);
-
-            return [
-                'id' => $event->id,
-                'title' => $event->titre,
-                'start' => $event->date_debut->format('Y-m-d H:i:s'),
-                'end' => $event->date_fin->format('Y-m-d H:i:s'),
-                'backgroundColor' => $color,
-                'borderColor' => $color,
-                'textColor' => '#ffffff',
-                'url' => route('events.show', $event->id),
-                'extendedProps' => [
-                    'type' => $event->type,
-                    'status' => $event->statut,
-                    'location' => $event->lieu,
-                    'organizer' => $event->organisateur->nom . ' ' . $event->organisateur->prenom,
-                    'project' => $event->project ? $event->project->nom : null
-                ]
-            ];
-        });
-
-        return response()->json($events);
-    }
-
-    /**
-     * Afficher le formulaire de création d'un événement
+     * Show the form for creating a new resource.
      */
     public function create()
     {
-        $users = User::where('statut', 'actif')->get();
-        $projects = Project::where('statut', '!=', 'termine')->get();
+        $projects = Project::active()->orderBy('nom')->get();
+        $users = User::active()->orderBy('prenom')->get();
 
-        return view('events.create', compact('users', 'projects'));
+        return view('events.create', compact('projects', 'users'));
     }
 
     /**
-     * Enregistrer un nouvel événement
+     * Store a newly created resource in storage.
      */
     public function store(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'titre' => 'required|string|max:100',
+        $request->validate([
+            'titre' => 'required|string|max:255',
             'description' => 'required|string',
-            'type' => 'required|in:intervention,reunion,formation,visite',
-            'date_debut' => 'required|date|after_or_equal:now',
+            'type' => 'required|in:intervention,reunion,formation,visite,maintenance,autre',
+            'date_debut' => 'required|date',
             'date_fin' => 'required|date|after:date_debut',
-            'lieu' => 'required|string|max:100',
-            'coordonnees_gps' => 'nullable|string|max:50',
-            'priorite' => 'required|in:normale,haute,urgente',
-            'id_projet' => 'nullable|exists:projects,id',
-            'participants' => 'nullable|array',
-            'participants.*' => 'exists:users,id',
+            'lieu' => 'required|string|max:255',
+            'participants' => 'nullable|string',
+            'materiels_requis' => 'nullable|string',
+            'user_id' => 'required|exists:users,id',
+            'project_id' => 'nullable|exists:projects,id',
         ], [
             'titre.required' => 'Le titre est obligatoire.',
             'description.required' => 'La description est obligatoire.',
+            'type.required' => 'Le type d\'événement est obligatoire.',
             'date_debut.required' => 'La date de début est obligatoire.',
-            'date_debut.after_or_equal' => 'La date de début ne peut pas être antérieure à maintenant.',
             'date_fin.required' => 'La date de fin est obligatoire.',
             'date_fin.after' => 'La date de fin doit être postérieure à la date de début.',
             'lieu.required' => 'Le lieu est obligatoire.',
+            'user_id.required' => 'L\'assignation à un utilisateur est obligatoire.',
+            'user_id.exists' => 'L\'utilisateur sélectionné n\'existe pas.',
+            'project_id.exists' => 'Le projet sélectionné n\'existe pas.',
         ]);
-
-        if ($validator->fails()) {
-            return back()->withErrors($validator)->withInput();
-        }
 
         $event = Event::create([
             'titre' => $request->titre,
             'description' => $request->description,
             'type' => $request->type,
+            'statut' => 'planifie',
             'date_debut' => $request->date_debut,
             'date_fin' => $request->date_fin,
             'lieu' => $request->lieu,
-            'coordonnees_gps' => $request->coordonnees_gps,
-            'statut' => 'planifie',
-            'priorite' => $request->priorite,
-            'id_organisateur' => Auth::id(),
-            'id_projet' => $request->id_projet,
+            'participants' => $request->participants,
+            'materiels_requis' => $request->materiels_requis,
+            'user_id' => $request->user_id,
+            'project_id' => $request->project_id,
         ]);
 
-        // Ajouter les participants
-        if ($request->has('participants') && is_array($request->participants)) {
-            foreach ($request->participants as $participantId) {
-                Participation::create([
-                    'id_evenement' => $event->id,
-                    'id_utilisateur' => $participantId,
-                    'statut_presence' => 'invite',
-                ]);
-            }
-        }
-
-        // Log de l'action
-        $this->logAction('CREATION', "Création de l'événement: {$event->titre}");
-
-        return redirect()->route('events.index')
-                        ->with('success', 'Événement créé avec succès.');
+        return redirect()->route('events.show', $event)
+            ->with('success', 'Événement créé avec succès.');
     }
 
     /**
-     * Afficher les détails d'un événement
+     * Display the specified resource.
      */
     public function show(Event $event)
     {
-        $this->authorize('view', $event);
+        $event->load(['user', 'project', 'reports']);
 
-        $event->load('organisateur', 'project', 'participants.user', 'tasks');
-
-        // Statistiques de participation
-        $participationStats = [
-            'total' => $event->participants->count(),
-            'confirme' => $event->participants->where('statut_presence', 'confirme')->count(),
-            'decline' => $event->participants->where('statut_presence', 'decline')->count(),
-            'en_attente' => $event->participants->where('statut_presence', 'invite')->count(),
-        ];
-
-        return view('events.show', compact('event', 'participationStats'));
+        return view('events.show', compact('event'));
     }
 
     /**
-     * Afficher le formulaire d'édition
+     * Show the form for editing the specified resource.
      */
     public function edit(Event $event)
     {
-        $this->authorize('update', $event);
+        // Vérifier les permissions
+        if (!Auth::user()->isAdmin() && $event->user_id !== Auth::id()) {
+            abort(403, 'Vous n\'avez pas l\'autorisation de modifier cet événement.');
+        }
 
-        $users = User::where('statut', 'actif')->get();
-        $projects = Project::where('statut', '!=', 'termine')->get();
-        $currentParticipants = $event->participants->pluck('id_utilisateur')->toArray();
+        $projects = Project::active()->orderBy('nom')->get();
+        $users = User::active()->orderBy('prenom')->get();
 
-        return view('events.edit', compact('event', 'users', 'projects', 'currentParticipants'));
+        return view('events.edit', compact('event', 'projects', 'users'));
     }
 
     /**
-     * Mettre à jour un événement
+     * Update the specified resource in storage.
      */
     public function update(Request $request, Event $event)
     {
-        $this->authorize('update', $event);
+        // Vérifier les permissions
+        if (!Auth::user()->isAdmin() && $event->user_id !== Auth::id()) {
+            abort(403, 'Vous n\'avez pas l\'autorisation de modifier cet événement.');
+        }
 
-        $validator = Validator::make($request->all(), [
-            'titre' => 'required|string|max:100',
+        $request->validate([
+            'titre' => 'required|string|max:255',
             'description' => 'required|string',
-            'type' => 'required|in:intervention,reunion,formation,visite',
+            'type' => 'required|in:intervention,reunion,formation,visite,maintenance,autre',
+            'statut' => 'required|in:planifie,en_cours,termine,reporte,annule',
             'date_debut' => 'required|date',
             'date_fin' => 'required|date|after:date_debut',
-            'lieu' => 'required|string|max:100',
-            'coordonnees_gps' => 'nullable|string|max:50',
-            'statut' => 'required|in:planifie,en_cours,termine,annule,reporte',
-            'priorite' => 'required|in:normale,haute,urgente',
-            'id_projet' => 'nullable|exists:projects,id',
-            'participants' => 'nullable|array',
-            'participants.*' => 'exists:users,id',
+            'lieu' => 'required|string|max:255',
+            'participants' => 'nullable|string',
+            'materiels_requis' => 'nullable|string',
+            'resultats' => 'nullable|string',
+            'user_id' => 'required|exists:users,id',
+            'project_id' => 'nullable|exists:projects,id',
         ]);
 
-        if ($validator->fails()) {
-            return back()->withErrors($validator)->withInput();
-        }
-
-        $oldStatus = $event->statut;
-
-        $event->update([
-            'titre' => $request->titre,
-            'description' => $request->description,
-            'type' => $request->type,
-            'date_debut' => $request->date_debut,
-            'date_fin' => $request->date_fin,
-            'lieu' => $request->lieu,
-            'coordonnees_gps' => $request->coordonnees_gps,
-            'statut' => $request->statut,
-            'priorite' => $request->priorite,
-            'id_projet' => $request->id_projet,
-        ]);
-
-        // Mettre à jour les participants
-        $event->participants()->delete();
-
-        if ($request->has('participants') && is_array($request->participants)) {
-            foreach ($request->participants as $participantId) {
-                Participation::create([
-                    'id_evenement' => $event->id,
-                    'id_utilisateur' => $participantId,
-                    'statut_presence' => 'invite',
-                ]);
-            }
-        }
-
-        // Log si changement de statut
-        if ($oldStatus !== $request->statut) {
-            $this->logAction('MODIFICATION', "Changement statut événement '{$event->titre}': {$oldStatus} → {$request->statut}");
-        }
+        $event->update($request->only([
+            'titre', 'description', 'type', 'statut', 'date_debut', 'date_fin',
+            'lieu', 'participants', 'materiels_requis', 'resultats', 'user_id', 'project_id'
+        ]));
 
         return redirect()->route('events.show', $event)
-                        ->with('success', 'Événement mis à jour avec succès.');
+            ->with('success', 'Événement mis à jour avec succès.');
     }
 
     /**
-     * Supprimer un événement
+     * Remove the specified resource from storage.
      */
     public function destroy(Event $event)
     {
-        $this->authorize('delete', $event);
+        // Vérifier les permissions
+        if (!Auth::user()->isAdmin() && $event->user_id !== Auth::id()) {
+            abort(403, 'Vous n\'avez pas l\'autorisation de supprimer cet événement.');
+        }
 
-        $eventTitle = $event->titre;
-
-        // Supprimer les participations
-        $event->participants()->delete();
-
-        // Supprimer l'événement
         $event->delete();
 
-        $this->logAction('SUPPRESSION', "Suppression de l'événement: {$eventTitle}");
-
         return redirect()->route('events.index')
-                        ->with('success', 'Événement supprimé avec succès.');
+            ->with('success', 'Événement supprimé avec succès.');
     }
 
     /**
-     * Confirmer/Décliner la participation à un événement
+     * Display calendar view
      */
-    public function updateParticipation(Request $request, Event $event)
+    public function calendar(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'statut' => 'required|in:confirme,decline',
+        $events = Event::with(['user', 'project']);
+
+        // Filtrage selon le rôle
+        if (!Auth::user()->isAdmin()) {
+            $events->where('user_id', Auth::id());
+        }
+
+        // Filtrer par mois si spécifié
+        if ($request->filled('month') && $request->filled('year')) {
+            $events->whereMonth('date_debut', $request->month)
+                   ->whereYear('date_debut', $request->year);
+        } else {
+            // Par défaut, afficher le mois actuel
+            $events->whereMonth('date_debut', now()->month)
+                   ->whereYear('date_debut', now()->year);
+        }
+
+        $events = $events->orderBy('date_debut')->get();
+
+        return view('events.calendar', compact('events'));
+    }
+
+    /**
+     * Get calendar data for AJAX requests
+     */
+    public function calendarData(Request $request)
+    {
+        $query = Event::with(['user', 'project']);
+
+        // Filtrage selon le rôle
+        if (!Auth::user()->isAdmin()) {
+            $query->where('user_id', Auth::id());
+        }
+
+        // Filtrer par période si spécifiée
+        if ($request->filled('start') && $request->filled('end')) {
+            $query->whereBetween('date_debut', [
+                Carbon::parse($request->start),
+                Carbon::parse($request->end)
+            ]);
+        }
+
+        $events = $query->get();
+
+        // Formater pour FullCalendar
+        $calendarEvents = $events->map(function ($event) {
+            return [
+                'id' => $event->id,
+                'title' => $event->titre,
+                'start' => $event->date_debut->toISOString(),
+                'end' => $event->date_fin->toISOString(),
+                'description' => $event->description,
+                'location' => $event->lieu,
+                'type' => $event->type,
+                'status' => $event->statut,
+                'backgroundColor' => $this->getEventColor($event->type, $event->statut),
+                'borderColor' => $this->getEventColor($event->type, $event->statut),
+                'url' => route('events.show', $event),
+                'extendedProps' => [
+                    'user' => $event->user ? $event->user->prenom . ' ' . $event->user->nom : '',
+                    'project' => $event->project ? $event->project->nom : '',
+                    'type_label' => $event->type_label,
+                    'status_label' => $event->status_label,
+                ]
+            ];
+        });
+
+        return response()->json($calendarEvents);
+    }
+
+    /**
+     * Update event status via AJAX
+     */
+    public function updateStatus(Request $request, Event $event)
+    {
+        // Vérifier les permissions
+        if (!Auth::user()->isAdmin() && $event->user_id !== Auth::id()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Vous n\'avez pas l\'autorisation de modifier cet événement.'
+            ], 403);
+        }
+
+        $request->validate([
+            'statut' => 'required|in:planifie,en_cours,termine,reporte,annule',
         ]);
 
-        if ($validator->fails()) {
-            return response()->json(['error' => 'Données invalides'], 400);
-        }
-
-        $participation = Participation::where('id_evenement', $event->id)
-                                    ->where('id_utilisateur', Auth::id())
-                                    ->first();
-
-        if (!$participation) {
-            return response()->json(['error' => 'Participation non trouvée'], 404);
-        }
-
-        $participation->statut_presence = $request->statut;
-        $participation->save();
-
-        $statusText = $request->statut === 'confirme' ? 'confirmée' : 'déclinée';
-
-        $this->logAction('MODIFICATION', "Participation {$statusText} pour l'événement: {$event->titre}");
+        $event->update(['statut' => $request->statut]);
 
         return response()->json([
             'success' => true,
-            'message' => "Participation {$statusText} avec succès",
-            'status' => $request->statut
+            'message' => 'Statut mis à jour avec succès.',
+            'event' => [
+                'id' => $event->id,
+                'statut' => $event->statut,
+                'status_label' => $event->status_label,
+            ]
         ]);
     }
 
     /**
-     * Marquer la présence effective à un événement
+     * Get upcoming events
      */
-    public function markAttendance(Request $request, Event $event)
+    public function upcoming(Request $request)
     {
-        $this->authorize('update', $event);
+        $limit = $request->get('limit', 5);
 
-        $validator = Validator::make($request->all(), [
-            'participants' => 'required|array',
-            'participants.*' => 'in:present,absent',
-        ]);
+        $query = Event::with(['user', 'project'])
+            ->where('date_debut', '>', now())
+            ->where('statut', '!=', 'annule');
 
-        if ($validator->fails()) {
-            return response()->json(['error' => 'Données invalides'], 400);
+        // Filtrage selon le rôle
+        if (!Auth::user()->isAdmin()) {
+            $query->where('user_id', Auth::id());
         }
 
-        foreach ($request->participants as $userId => $attendance) {
-            Participation::where('id_evenement', $event->id)
-                         ->where('id_utilisateur', $userId)
-                         ->update(['statut_presence' => $attendance]);
-        }
-
-        $this->logAction('MODIFICATION', "Présences mises à jour pour l'événement: {$event->titre}");
+        $events = $query->orderBy('date_debut')
+            ->limit($limit)
+            ->get();
 
         return response()->json([
             'success' => true,
-            'message' => 'Présences mises à jour avec succès'
+            'events' => $events->map(function ($event) {
+                return [
+                    'id' => $event->id,
+                    'titre' => $event->titre,
+                    'type' => $event->type,
+                    'type_label' => $event->type_label,
+                    'date_debut' => $event->date_debut->format('d/m/Y H:i'),
+                    'lieu' => $event->lieu,
+                    'url' => route('events.show', $event),
+                ];
+            })
         ]);
     }
 
     /**
-     * Obtenir les événements d'un utilisateur pour une période
-     */
-    public function getUserEvents(Request $request)
-    {
-        $user = Auth::user();
-        $start = Carbon::parse($request->get('start', Carbon::now()->startOfMonth()));
-        $end = Carbon::parse($request->get('end', Carbon::now()->endOfMonth()));
-
-        $events = Event::where(function($query) use ($user) {
-                            $query->where('id_organisateur', $user->id)
-                                  ->orWhereHas('participants', function($q) use ($user) {
-                                      $q->where('id_utilisateur', $user->id);
-                                  });
-                        })
-                        ->whereBetween('date_debut', [$start, $end])
-                        ->with('organisateur', 'project')
-                        ->orderBy('date_debut')
-                        ->get();
-
-        return response()->json($events);
-    }
-
-    /**
-     * Couleur des événements selon type et statut
+     * Get color for event based on type and status
      */
     private function getEventColor($type, $status)
     {
-        if ($status === 'annule') {
-            return '#6c757d'; // Gris
-        }
+        // Couleur selon le statut d'abord
+        if ($status === 'annule') return '#dc3545'; // Rouge
+        if ($status === 'termine') return '#198754'; // Vert
+        if ($status === 'en_cours') return '#0d6efd'; // Bleu
+        if ($status === 'reporte') return '#ffc107'; // Jaune
 
-        if ($status === 'termine') {
-            return '#28a745'; // Vert
-        }
-
-        $typeColors = [
+        // Sinon couleur selon le type
+        return match($type) {
             'intervention' => '#dc3545', // Rouge
-            'reunion' => '#007bff',      // Bleu
-            'formation' => '#28a745',    // Vert
-            'visite' => '#ffc107'        // Jaune
-        ];
-
-        return $typeColors[$type] ?? '#6c757d';
+            'reunion' => '#0d6efd', // Bleu
+            'formation' => '#198754', // Vert
+            'visite' => '#17a2b8', // Cyan
+            'maintenance' => '#ffc107', // Jaune
+            default => '#6c757d' // Gris
+        };
     }
 
     /**
-     * Log des actions
+     * Get events statistics
      */
-    private function logAction($type, $description)
+    public function stats()
     {
-        \App\Models\Journal::create([
-            'date' => now(),
-            'type_action' => $type,
-            'description' => $description,
-            'utilisateur_id' => Auth::id(),
-            'adresse_ip' => request()->ip(),
+        $query = Event::query();
+
+        // Filtrage selon le rôle
+        if (!Auth::user()->isAdmin()) {
+            $query->where('user_id', Auth::id());
+        }
+
+        $stats = [
+            'total' => $query->count(),
+            'today' => $query->clone()->whereDate('date_debut', today())->count(),
+            'this_week' => $query->clone()->whereBetween('date_debut', [
+                now()->startOfWeek(),
+                now()->endOfWeek()
+            ])->count(),
+            'upcoming' => $query->clone()->where('date_debut', '>', now())->count(),
+            'by_type' => $query->clone()->selectRaw('type, COUNT(*) as count')
+                ->groupBy('type')
+                ->pluck('count', 'type'),
+            'by_status' => $query->clone()->selectRaw('statut, COUNT(*) as count')
+                ->groupBy('statut')
+                ->pluck('count', 'statut'),
+        ];
+
+        return response()->json([
+            'success' => true,
+            'stats' => $stats
         ]);
     }
 }

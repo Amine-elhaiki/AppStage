@@ -2,16 +2,16 @@
 
 namespace App\Providers;
 
+use App\Models\User;
 use App\Models\Task;
 use App\Models\Project;
 use App\Models\Event;
 use App\Models\Report;
-use App\Models\User;
+use App\Policies\UserPolicy;
 use App\Policies\TaskPolicy;
 use App\Policies\ProjectPolicy;
 use App\Policies\EventPolicy;
 use App\Policies\ReportPolicy;
-use App\Policies\UserPolicy;
 use Illuminate\Foundation\Support\Providers\AuthServiceProvider as ServiceProvider;
 use Illuminate\Support\Facades\Gate;
 
@@ -23,11 +23,11 @@ class AuthServiceProvider extends ServiceProvider
      * @var array<class-string, class-string>
      */
     protected $policies = [
+        User::class => UserPolicy::class,
         Task::class => TaskPolicy::class,
         Project::class => ProjectPolicy::class,
         Event::class => EventPolicy::class,
         Report::class => ReportPolicy::class,
-        User::class => UserPolicy::class,
     ];
 
     /**
@@ -37,113 +37,113 @@ class AuthServiceProvider extends ServiceProvider
     {
         $this->registerPolicies();
 
-        // Gates personnalisés pour l'application PlanifTech
-
-        // Gate pour l'accès administrateur
-        Gate::define('admin-access', function ($user) {
-            return $user->role === 'admin';
+        // Gates personnalisés
+        Gate::define('admin-access', function (User $user) {
+            return $user->isAdmin();
         });
 
-        // Gate pour l'accès technicien
-        Gate::define('technician-access', function ($user) {
-            return $user->role === 'technicien' && $user->statut === 'actif';
+        Gate::define('chef-equipe-access', function (User $user) {
+            return $user->isChefEquipe() || $user->isAdmin();
         });
 
-        // Gate pour la gestion des utilisateurs
-        Gate::define('manage-users', function ($user) {
-            return $user->role === 'admin';
+        Gate::define('technicien-access', function (User $user) {
+            return $user->isTechnicien() || $user->isChefEquipe() || $user->isAdmin();
         });
 
-        // Gate pour la création de projets
-        Gate::define('create-projects', function ($user) {
-            return $user->role === 'admin';
+        Gate::define('manage-users', function (User $user) {
+            return $user->isAdmin();
         });
 
-        // Gate pour la gestion des tâches
-        Gate::define('assign-tasks', function ($user) {
-            return $user->role === 'admin';
+        Gate::define('validate-reports', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
         });
 
-        // Gate pour voir les statistiques globales
-        Gate::define('view-global-stats', function ($user) {
-            return $user->role === 'admin';
+        Gate::define('manage-system', function (User $user) {
+            return $user->isAdmin();
         });
 
-        // Gate pour l'export de données
-        Gate::define('export-data', function ($user) {
-            return $user->statut === 'actif';
+        Gate::define('view-analytics', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
         });
 
-        // Gate pour la modération de contenu
-        Gate::define('moderate-content', function ($user) {
-            return $user->role === 'admin';
+        Gate::define('export-data', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
         });
 
-        // Gate pour l'accès aux logs système
-        Gate::define('view-system-logs', function ($user) {
-            return $user->role === 'admin';
-        });
-
-        // Gate pour la configuration système
-        Gate::define('system-configuration', function ($user) {
-            return $user->role === 'admin';
-        });
-
-        // Gate pour créer des événements
-        Gate::define('create-events', function ($user) {
-            return $user->statut === 'actif';
-        });
-
-        // Gate pour soumettre des rapports
-        Gate::define('submit-reports', function ($user) {
-            return $user->role === 'technicien' && $user->statut === 'actif';
-        });
-
-        // Gate pour voir les données d'autres utilisateurs
-        Gate::define('view-others-data', function ($user, $targetUser = null) {
-            if ($user->role === 'admin') {
-                return true;
+        // Gate pour vérifier les permissions spécifiques
+        Gate::define('has-permission', function (User $user, string $permission) {
+            if ($user->isAdmin()) {
+                return true; // Les admins ont toutes les permissions
             }
 
-            return $targetUser && $user->id === $targetUser->id;
+            return $user->hasPermission($permission);
         });
 
-        // Gate pour la gestion des participations aux événements
-        Gate::define('manage-event-participation', function ($user, $event) {
-            return $user->role === 'admin' ||
-                   $event->id_organisateur === $user->id;
+        // Gates pour les actions sur les projets
+        Gate::define('create-project', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
         });
 
-        // Gate pour l'édition de tâches assignées
-        Gate::define('edit-assigned-task', function ($user, $task) {
-            return $user->role === 'admin' ||
-                   $task->id_utilisateur === $user->id ||
-                   ($task->project && $task->project->id_responsable === $user->id);
+        Gate::define('manage-project', function (User $user, Project $project) {
+            return $user->isAdmin() || $project->responsable_id === $user->id;
         });
 
-        // Gate pour voir les rapports sensibles
-        Gate::define('view-sensitive-reports', function ($user) {
-            return $user->role === 'admin';
+        // Gates pour les tâches
+        Gate::define('create-task', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
         });
 
-        // Gate pour la réassignation de ressources
-        Gate::define('reassign-resources', function ($user) {
-            return $user->role === 'admin';
+        Gate::define('assign-task', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
         });
 
-        // Gate pour l'accès aux API externes
-        Gate::define('api-access', function ($user) {
-            return $user->statut === 'actif';
+        // Gates pour les rapports
+        Gate::define('validate-report', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
         });
 
-        // Gate pour la suppression définitive
-        Gate::define('permanent-delete', function ($user) {
-            return $user->role === 'admin';
+        Gate::define('view-all-reports', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
         });
 
-        // Vérification de l'utilisateur super admin (si nécessaire)
-        Gate::define('super-admin', function ($user) {
-            return $user->role === 'admin' && $user->email === 'admin@ormvat.ma';
+        // Gates pour l'administration
+        Gate::define('access-admin-panel', function (User $user) {
+            return $user->isAdmin();
+        });
+
+        Gate::define('manage-settings', function (User $user) {
+            return $user->isAdmin();
+        });
+
+        Gate::define('view-system-logs', function (User $user) {
+            return $user->isAdmin();
+        });
+
+        // Gates pour les statistiques et rapports
+        Gate::define('view-global-stats', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
+        });
+
+        Gate::define('export-reports', function (User $user) {
+            return $user->isAdmin() || $user->isChefEquipe();
+        });
+
+        // Gate pour les actions en masse
+        Gate::define('bulk-actions', function (User $user) {
+            return $user->isAdmin();
+        });
+
+        // Gates spécifiques pour certaines fonctionnalités
+        Gate::define('emergency-access', function (User $user) {
+            return $user->isAdmin();
+        });
+
+        Gate::define('backup-system', function (User $user) {
+            return $user->isAdmin();
+        });
+
+        Gate::define('impersonate-user', function (User $user) {
+            return $user->isAdmin();
         });
     }
 }
